@@ -82,6 +82,9 @@ VEHICLE_ATTRIBUTES_TTL_SECONDS = 90
 ROUTE_PLAN_MAX_STOPS = 4
 ROUTE_PLAN_MAX_PREDICTIONS_PER_STOP = 2
 ROUTE_PLAN_MAX_TOTAL_OPTIONS = 8
+CALENDAR_COMMUTE_PREVIEW_EVENT_LIMIT = 3
+CALENDAR_COMMUTE_PREVIEW_STOP_LIMIT = 2
+CALENDAR_COMMUTE_PREVIEW_STOP_TIME_LIMIT = 4
 
 # Session configuration
 SESSION_EXPIRY_HOURS = 24
@@ -1935,7 +1938,7 @@ def _schedule_commute_preview_for_event(
     trips_by_id = _load_gtfs_trips_by_id()
     routes_by_id = _load_gtfs_routes_by_id()
     stop_times_by_stop = _load_gtfs_stop_times_by_stop()
-    origin_stops = _nearest_gtfs_stops(origin_point)
+    origin_stops = _nearest_gtfs_stops(origin_point, limit=CALENDAR_COMMUTE_PREVIEW_STOP_LIMIT)
     options: List[CalendarCommuteOption] = []
 
     direct_leave_by = class_start - timedelta(minutes=direct_walk["duration_minutes"])
@@ -1964,7 +1967,7 @@ def _schedule_commute_preview_for_event(
             for stop_time in stop_times_by_stop.get(stop["stop_id"], [])
             if stop_time.get("departure_seconds") is not None
             and stop_time["departure_seconds"] <= latest_boarding_seconds
-        ][-16:]
+        ][-CALENDAR_COMMUTE_PREVIEW_STOP_TIME_LIMIT:]
 
         for stop_time in candidate_stop_times:
             trip = trips_by_id.get(stop_time["trip_id"])
@@ -2059,6 +2062,24 @@ def _schedule_commute_preview_for_event(
         best_route_number=best_option.route_number if best_option and best_option.type == "bus" else None,
         options=sorted_options,
     )
+
+
+def _calendar_commute_previews(
+    events: List[CalendarEvent],
+    origin: Optional[CommuteOrigin],
+) -> Optional[List[CalendarCommutePreview]]:
+    if not origin:
+        return None
+    upcoming_events = sorted(
+        [event for event in events if _is_future_event(event.start_time)],
+        key=lambda event: event.start_time,
+    )[:CALENDAR_COMMUTE_PREVIEW_EVENT_LIMIT]
+    previews = [
+        preview
+        for event in upcoming_events
+        if (preview := _schedule_commute_preview_for_event(event, origin)) is not None
+    ]
+    return previews or None
 
 
 def _fetch_predictions(stop_id: str) -> tuple[List[dict], str]:
@@ -2676,15 +2697,10 @@ async def import_calendar(
             parsed_origin = CommuteOrigin(**json.loads(commute_origin))
         except (TypeError, ValueError):
             parsed_origin = None
-    commute_previews = [
-        preview
-        for event in events
-        if (preview := _schedule_commute_preview_for_event(event, parsed_origin)) is not None
-    ]
     return CalendarImportResponse(
         source="ics",
         events=events,
-        commute_previews=commute_previews or None,
+        commute_previews=_calendar_commute_previews(events, parsed_origin),
     )
 
 
@@ -2779,15 +2795,10 @@ def add_manual_calendar_events(
                 for event in request.events
             ],
         )
-    commute_previews = [
-        preview
-        for event in request.events
-        if (preview := _schedule_commute_preview_for_event(event, request.commute_origin)) is not None
-    ]
     return CalendarImportResponse(
         source="manual",
         events=request.events,
-        commute_previews=commute_previews or None,
+        commute_previews=_calendar_commute_previews(request.events, request.commute_origin),
     )
 
 
