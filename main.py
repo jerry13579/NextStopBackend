@@ -1802,6 +1802,27 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/debug/gtfs")
+def debug_gtfs():
+    import time
+    results = {}
+    for name, fn in [
+        ("trips", _load_gtfs_trips),
+        ("routes", _load_gtfs_routes),
+        ("stops", _load_gtfs_stops_by_id),
+        ("stop_times_by_trip", _load_gtfs_stop_times_by_trip),
+        ("stop_times_by_stop", _load_gtfs_stop_times_by_stop),
+        ("calendar", _load_gtfs_calendar),
+    ]:
+        t = time.time()
+        try:
+            data = fn()
+            results[name] = {"status": "ok", "count": len(data), "ms": int((time.time() - t) * 1000)}
+        except Exception as e:
+            results[name] = {"status": "error", "detail": str(e), "ms": int((time.time() - t) * 1000)}
+    return results
+
+
 @app.get("/debug/actransit")
 def debug_actransit():
     if not ACTRANSIT_API_KEY:
