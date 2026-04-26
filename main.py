@@ -1,6 +1,7 @@
 import os
 import re
 import csv
+import json
 import hashlib
 import secrets
 import sqlite3
@@ -9,7 +10,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, List, Any
@@ -188,9 +189,41 @@ class CalendarEvent(BaseModel):
     course_code: Optional[str] = None
 
 
+class CommuteOrigin(BaseModel):
+    name: Optional[str] = None
+    lat: float
+    lng: float
+
+
+class CalendarCommuteOption(BaseModel):
+    type: str
+    route_number: Optional[str] = None
+    route_name: Optional[str] = None
+    leave_by: str
+    depart_at: Optional[str] = None
+    arrive_at: str
+    total_trip_time_minutes: int
+    walk_time_minutes: int
+    ride_time_minutes: int = 0
+    destination_walk_time_minutes: int = 0
+    boarding_stop_name: Optional[str] = None
+    alighting_stop_name: Optional[str] = None
+
+
+class CalendarCommutePreview(BaseModel):
+    event_id: str
+    origin_name: Optional[str] = None
+    destination: str
+    source: str
+    leave_by: Optional[str] = None
+    best_route_number: Optional[str] = None
+    options: List[CalendarCommuteOption] = []
+
+
 class CalendarImportResponse(BaseModel):
     source: str
     events: List[CalendarEvent]
+    commute_previews: Optional[List[CalendarCommutePreview]] = None
 
 
 class AuthRequest(BaseModel):
@@ -607,6 +640,16 @@ def _nearest_gtfs_stop(point: dict, preferred_name: Optional[str] = None) -> Opt
             best_score = score
             best_stop = stop
     return best_stop
+
+
+def _nearest_gtfs_stops(point: dict, limit: int = 4, max_distance_meters: int = 1800) -> List[dict]:
+    stops_by_id = _load_gtfs_stops_by_id()
+    ranked: List[tuple[float, dict]] = []
+    for stop in stops_by_id.values():
+        distance = _distance_meters(point, {"lat": stop["lat"], "lng": stop["lng"]})
+        if distance <= max_distance_meters:
+            ranked.append((distance, stop))
+    return [stop for _, stop in sorted(ranked, key=lambda item: item[0])[:limit]]
 
 
 def _parse_gtfs_time_to_seconds(value: Optional[str]) -> Optional[int]:
@@ -1860,6 +1903,164 @@ def _build_available_buses(
     return buses
 
 
+def _datetime_on_service_day(local_date: datetime, seconds_after_midnight: int) -> datetime:
+    midnight = datetime.combine(local_date.date(), datetime.min.time(), tzinfo=local_date.tzinfo)
+    return midnight + timedelta(seconds=seconds_after_midnight)
+
+
+def _schedule_commute_preview_for_event(
+    event: CalendarEvent,
+    origin: Optional[CommuteOrigin],
+) -> Optional[CalendarCommutePreview]:
+    if not origin or not event.location:
+        return None
+
+    try:
+        class_start = _ac_transit_now(_parse_departure(event.start_time))
+        origin_point = {"lat": origin.lat, "lng": origin.lng}
+        destination_point = _geocode_destination(event.location, origin_point)
+        destination_stop_id = _nearest_gtfs_stop_id(destination_point)
+        active_service_ids = _active_gtfs_service_ids(class_start)
+        direct_walk = _google_route(origin_point, destination_point)
+    except Exception:
+        return CalendarCommutePreview(
+            event_id=event.id,
+            origin_name=origin.name,
+            destination=event.location,
+            source="unavailable",
+            options=[],
+        )
+
+    class_seconds = class_start.hour * 3600 + class_start.minute * 60 + class_start.second
+    trips_by_id = _load_gtfs_trips_by_id()
+    routes_by_id = _load_gtfs_routes_by_id()
+    stop_times_by_stop = _load_gtfs_stop_times_by_stop()
+    origin_stops = _nearest_gtfs_stops(origin_point)
+    options: List[CalendarCommuteOption] = []
+
+    direct_leave_by = class_start - timedelta(minutes=direct_walk["duration_minutes"])
+    options.append(
+        CalendarCommuteOption(
+            type="walk",
+            leave_by=direct_leave_by.isoformat(),
+            depart_at=None,
+            arrive_at=class_start.isoformat(),
+            total_trip_time_minutes=direct_walk["duration_minutes"],
+            walk_time_minutes=direct_walk["duration_minutes"],
+        )
+    )
+
+    for stop in origin_stops:
+        try:
+            walk_to_stop = _google_route(origin_point, {"lat": stop["lat"], "lng": stop["lng"]})
+        except Exception:
+            continue
+        latest_boarding_seconds = class_seconds - walk_to_stop["duration_minutes"] * 60
+        if latest_boarding_seconds <= 0:
+            continue
+
+        candidate_stop_times = [
+            stop_time
+            for stop_time in stop_times_by_stop.get(stop["stop_id"], [])
+            if stop_time.get("departure_seconds") is not None
+            and stop_time["departure_seconds"] <= latest_boarding_seconds
+        ][-16:]
+
+        for stop_time in candidate_stop_times:
+            trip = trips_by_id.get(stop_time["trip_id"])
+            if not trip:
+                continue
+            service_id = (trip.get("service_id") or "").strip()
+            if service_id not in active_service_ids:
+                continue
+            route_id = (trip.get("route_id") or "").strip()
+            route = routes_by_id.get(route_id, {})
+            route_name = (route.get("route_short_name") or route_id).strip() or route_id
+            direction_raw = str(trip.get("direction_id", "")).strip()
+            try:
+                direction_id = int(direction_raw) if direction_raw else None
+            except ValueError:
+                direction_id = None
+
+            segment = _build_transit_segment(
+                route_name=route_name,
+                trip_id=trip.get("trip_id"),
+                prediction_direction_id=direction_id,
+                boarding_stop_id=stop["stop_id"],
+                destination_stop_id=destination_stop_id,
+                destination_point=destination_point,
+                google_candidate=None,
+            )
+            if not segment:
+                continue
+
+            alighting_stop = segment.get("alighting_stop") or {}
+            try:
+                walk_from_stop = _google_route(
+                    {"lat": alighting_stop["lat"], "lng": alighting_stop["lng"]},
+                    destination_point,
+                )
+            except Exception:
+                continue
+
+            departure_seconds = stop_time["departure_seconds"]
+            depart_at = _datetime_on_service_day(class_start, departure_seconds)
+            ride_minutes = int(segment.get("ride_time_minutes") or 0)
+            arrive_at = depart_at + timedelta(minutes=ride_minutes + walk_from_stop["duration_minutes"])
+            if arrive_at > class_start:
+                continue
+
+            leave_by = depart_at - timedelta(minutes=walk_to_stop["duration_minutes"])
+            if leave_by <= _ac_transit_now():
+                continue
+
+            total_trip_minutes = max(round((arrive_at - leave_by).total_seconds() / 60), 1)
+            options.append(
+                CalendarCommuteOption(
+                    type="bus",
+                    route_number=route_name,
+                    route_name=segment.get("route_long_name") or f"Route {route_name}",
+                    leave_by=leave_by.isoformat(),
+                    depart_at=depart_at.isoformat(),
+                    arrive_at=arrive_at.isoformat(),
+                    total_trip_time_minutes=total_trip_minutes,
+                    walk_time_minutes=walk_to_stop["duration_minutes"],
+                    ride_time_minutes=ride_minutes,
+                    destination_walk_time_minutes=walk_from_stop["duration_minutes"],
+                    boarding_stop_name=stop["stop_name"],
+                    alighting_stop_name=alighting_stop.get("stop_name"),
+                )
+            )
+
+    deduped: Dict[str, CalendarCommuteOption] = {}
+    for option in options:
+        key = "|".join([
+            option.type,
+            option.route_number or "walk",
+            option.boarding_stop_name or "",
+            option.alighting_stop_name or "",
+        ])
+        existing = deduped.get(key)
+        if existing is None or option.leave_by > existing.leave_by:
+            deduped[key] = option
+
+    sorted_options = sorted(
+        deduped.values(),
+        key=lambda option: (option.leave_by, -option.total_trip_time_minutes),
+        reverse=True,
+    )[:5]
+    best_option = sorted_options[0] if sorted_options else None
+    return CalendarCommutePreview(
+        event_id=event.id,
+        origin_name=origin.name,
+        destination=event.location,
+        source="schedule" if sorted_options else "unavailable",
+        leave_by=best_option.leave_by if best_option else None,
+        best_route_number=best_option.route_number if best_option and best_option.type == "bus" else None,
+        options=sorted_options,
+    )
+
+
 def _fetch_predictions(stop_id: str) -> tuple[List[dict], str]:
     if not ACTRANSIT_API_KEY:
         return [], "unavailable"
@@ -2452,7 +2653,11 @@ def get_calendar_events(x_session_token: Optional[str] = Header(default=None)):
 
 
 @app.post("/calendar/import", response_model=CalendarImportResponse)
-async def import_calendar(file: UploadFile = File(...), x_session_token: Optional[str] = Header(default=None)):
+async def import_calendar(
+    file: UploadFile = File(...),
+    commute_origin: Optional[str] = Form(default=None),
+    x_session_token: Optional[str] = Header(default=None),
+):
     filename = file.filename or "calendar.ics"
     if not filename.lower().endswith(".ics"):
         raise HTTPException(status_code=400, detail="Upload an .ics calendar file")
@@ -2465,7 +2670,22 @@ async def import_calendar(file: UploadFile = File(...), x_session_token: Optiona
     user = _user_from_token(x_session_token)
     if user is not None:
         _store_calendar_events(user["id"], events, "ics")
-    return CalendarImportResponse(source="ics", events=events)
+    parsed_origin: Optional[CommuteOrigin] = None
+    if commute_origin:
+        try:
+            parsed_origin = CommuteOrigin(**json.loads(commute_origin))
+        except (TypeError, ValueError):
+            parsed_origin = None
+    commute_previews = [
+        preview
+        for event in events
+        if (preview := _schedule_commute_preview_for_event(event, parsed_origin)) is not None
+    ]
+    return CalendarImportResponse(
+        source="ics",
+        events=events,
+        commute_previews=commute_previews or None,
+    )
 
 
 class CalendarEventUpdateItem(BaseModel):
@@ -2537,6 +2757,7 @@ def delete_calendar_events(
 
 class ManualEventsRequest(BaseModel):
     events: List[CalendarEvent]
+    commute_origin: Optional[CommuteOrigin] = None
 
 
 @app.post("/calendar/events", response_model=CalendarImportResponse)
@@ -2558,7 +2779,16 @@ def add_manual_calendar_events(
                 for event in request.events
             ],
         )
-    return CalendarImportResponse(source="manual", events=request.events)
+    commute_previews = [
+        preview
+        for event in request.events
+        if (preview := _schedule_commute_preview_for_event(event, request.commute_origin)) is not None
+    ]
+    return CalendarImportResponse(
+        source="manual",
+        events=request.events,
+        commute_previews=commute_previews or None,
+    )
 
 
 @app.get("/locations/search")
