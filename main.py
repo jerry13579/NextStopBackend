@@ -30,6 +30,23 @@ else:
 
 app = FastAPI(title="NextStop Backend API")
 
+
+@app.on_event("startup")
+async def _startup_prewarm_gtfs():
+    try:
+        _load_gtfs_trips()
+        _load_gtfs_routes()
+        _load_gtfs_trips_by_id()
+        _load_gtfs_routes_by_id()
+        _load_gtfs_stops_by_id()
+        _load_gtfs_stop_times_by_trip()
+        _load_gtfs_stop_times_by_stop()
+        _load_gtfs_shapes()
+        _load_gtfs_calendar()
+        _load_gtfs_calendar_dates()
+    except Exception:
+        pass  # GTFS files may not be present in all environments
+
 default_origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
