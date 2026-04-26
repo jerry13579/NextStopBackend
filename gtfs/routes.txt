@@ -1,0 +1,124 @@
+route_id,agency_id,route_short_name,route_long_name,route_desc,route_type,route_url,route_color,route_text_color
+12,1,12,MLK Jr. - Temescal - Grand,,3,http://www.actransit.org/bus-lines-schedules/12,2B589C,FFFFFF
+14,1,14,14th St - San Antonio - High St,,3,http://www.actransit.org/bus-lines-schedules/14,2B589C,FFFFFF
+18,1,18,Solano - Shattuck - Park Blvd.,,3,http://www.actransit.org/bus-lines-schedules/18,A30D11,FFFFFF
+19,1,19,Alameda Pt-Buena Vista-Fruitvale,,3,http://www.actransit.org/bus-lines-schedules/19,07B5D0,000000
+1T,1,1T,International - E. 14th,,3,http://www.actransit.org/bus-lines-schedules/1T,782B84,FFFFFF
+200,1,200,Decoto - Newark Blvd. - Mowry,,3,http://www.actransit.org/bus-lines-schedules/200,2B589C,FFFFFF
+210,1,210,Fremont Blvd. - Mission San Jose,,3,http://www.actransit.org/bus-lines-schedules/210,2B589C,FFFFFF
+211,1,211,Fremont Blvd-Walnut Ave-Mission,,3,http://www.actransit.org/bus-lines-schedules/211,2B589C,FFFFFF
+216,1,216,Niles - Stevenson - NewPark,,3,http://www.actransit.org/bus-lines-schedules/216,07B5D0,000000
+22,1,22,Alcatraz - Peralta - Lakeshore,,3,http://www.actransit.org/bus-lines-schedules/22,2B589C,FFFFFF
+231,1,231,Fremont Blvd-Warm Springs-Milpa.,,3,http://www.actransit.org/bus-lines-schedules/231,07B5D0,000000
+239,1,239,Pacific Cm.-Grimmer-Warm Springs,,3,http://www.actransit.org/bus-lines-schedules/239,2B589C,FFFFFF
+251,1,251,Paseo Padre - Thornton - Cherry,,3,http://www.actransit.org/bus-lines-schedules/251,07B5D0,000000
+27,1,27,EMY Amtrak-Ashby-El Cerrito Plz.,,3,http://www.actransit.org/bus-lines-schedules/27,2B589C,FFFFFF
+28,1,28,Alvarado - Castro Valley - B St.,,3,http://www.actransit.org/bus-lines-schedules/28,07B5D0,000000
+281,1,281,Decoto - Paseo Padre-Cedar Blvd,,3,http://www.actransit.org/bus-lines-schedules/281,07B5D0,000000
+30,1,30,Dimond - Fruitvale - South Shore,,3,http://www.actransit.org/bus-lines-schedules/30,2B589C,FFFFFF
+31,1,31,Skyline Blvd-Fruitvale-Bay Farm,,3,http://www.actransit.org/bus-lines-schedules/31,2B589C,FFFFFF
+34,1,34,Estudillo - Davis - Meekland,,3,http://www.actransit.org/bus-lines-schedules/34,07B5D0,000000
+35,1,35,Estudillo - Davis -  Lewelling,,3,http://www.actransit.org/bus-lines-schedules/35,07B5D0,000000
+36,1,36,Claremont - Dwight - Adeline,,3,http://www.actransit.org/bus-lines-schedules/36,2B589C,FFFFFF
+40,1,40,Foothill - Bancroft - Bay Fair,,3,http://www.actransit.org/bus-lines-schedules/40,A30D11,FFFFFF
+41,1,41,Whitman - Huntwood - Union Landg,,3,http://www.actransit.org/bus-lines-schedules/41,07B5D0,000000
+45,1,45,Seminary - Sobrante Park,,3,http://www.actransit.org/bus-lines-schedules/45,2B589C,FFFFFF
+46L,1,46L,82nd Ave. - Grass Valley Limited,,3,http://www.actransit.org/bus-lines-schedules/46L,07B5D0,000000
+51A,1,51A,Broadway - Santa Clara,,3,http://www.actransit.org/bus-lines-schedules/51A,A30D11,FFFFFF
+51B,1,51B,University - College - Rockridge,,3,http://www.actransit.org/bus-lines-schedules/51B,A30D11,FFFFFF
+52,1,52,UC Village - Cedar - UC Campus,,3,http://www.actransit.org/bus-lines-schedules/52,A30D11,FFFFFF
+54,1,54,35th Ave. - Merritt College,,3,http://www.actransit.org/bus-lines-schedules/54,2B589C,FFFFFF
+56,1,56,Santa Clara - Weekes - Huntwood,,3,http://www.actransit.org/bus-lines-schedules/56,07B5D0,000000
+57,1,57,40th St. - MacArthur,,3,http://www.actransit.org/bus-lines-schedules/57,A30D11,FFFFFF
+6,1,6,Berkeley - Telegraph - Oakland,,3,http://www.actransit.org/bus-lines-schedules/6,A30D11,FFFFFF
+60,1,60,CSUEB - Southland - Tennyson,,3,http://www.actransit.org/bus-lines-schedules/60,07B5D0,000000
+604,1,604,Head Royce - OHDS - Berkeley,,3,http://www.actransit.org/bus-lines-schedules/604,595959,FFFFFF
+605,1,605,Head Royce - Montclair - College,,3,http://www.actransit.org/bus-lines-schedules/605,595959,FFFFFF
+606,1,606,Head Royce - Piedmont,,3,http://www.actransit.org/bus-lines-schedules/606,595959,FFFFFF
+607,1,607,Richmond High - Point Richmond,,3,http://www.actransit.org/bus-lines-schedules/607,595959,FFFFFF
+617,1,617,Skyline High - Seminary,,3,http://www.actransit.org/bus-lines-schedules/617,595959,FFFFFF
+62,1,62,7th St. - San Antonio - 23rd Av.,,3,http://www.actransit.org/bus-lines-schedules/62,2B589C,FFFFFF
+620,1,620,Newark Middle - Cedar,,3,http://www.actransit.org/bus-lines-schedules/620,595959,FFFFFF
+621,1,621,American High - Thornton Middle,,3,http://www.actransit.org/bus-lines-schedules/621,595959,FFFFFF
+623,1,623,Irvington High - Horner Middle,,3,http://www.actransit.org/bus-lines-schedules/623,595959,FFFFFF
+624,1,624,Mission San Jose - Hopkins Mid,,3,http://www.actransit.org/bus-lines-schedules/624,595959,FFFFFF
+625,1,625,Washington - Centerville Middle,,3,http://www.actransit.org/bus-lines-schedules/625,595959,FFFFFF
+627,1,627,Newark Memorial-Cedar-Newark Bl.,,3,http://www.actransit.org/bus-lines-schedules/627,595959,FFFFFF
+629,1,629,Newark Memorial - Cherry - Haley,,3,http://www.actransit.org/bus-lines-schedules/629,595959,FFFFFF
+631,1,631,Encinal - Alameda - Bay Farm,,3,http://www.actransit.org/bus-lines-schedules/631,595959,FFFFFF
+633,1,633,Harrison - Broadway - Park Blvd.,,3,http://www.actransit.org/bus-lines-schedules/633,595959,FFFFFF
+638,1,638,Skyline High - 73rd Ave.,,3,http://www.actransit.org/bus-lines-schedules/638,595959,FFFFFF
+639,1,639,Skyline High - Fruitvale Ave.,,3,http://www.actransit.org/bus-lines-schedules/639,595959,FFFFFF
+641,1,641,Hopkins Middle - Mission Blvd,,3,http://www.actransit.org/bus-lines-schedules/641,595959,FFFFFF
+642,1,642,Montera - Montclair - Colton,,3,http://www.actransit.org/bus-lines-schedules/642,595959,FFFFFF
+646,1,646,Montera - Skyline - 82nd Ave.,,3,http://www.actransit.org/bus-lines-schedules/646,595959,FFFFFF
+648,1,648,Skyline - High St.,,3,http://www.actransit.org/bus-lines-schedules/648,595959,FFFFFF
+649,1,649,Montera - Skyline - Grass Valley,,3,http://www.actransit.org/bus-lines-schedules/649,595959,FFFFFF
+65,1,65,Grizzly Peak - Euclid,,3,http://www.actransit.org/bus-lines-schedules/65,07B5D0,000000
+650,1,650,Montera - Oakmore - Seminary,,3,http://www.actransit.org/bus-lines-schedules/650,595959,FFFFFF
+651,1,651,Oakland Tech - Downtown Oakland,,3,http://www.actransit.org/bus-lines-schedules/651,595959,FFFFFF
+652,1,652,Skyline High - Elmhurst,,3,http://www.actransit.org/bus-lines-schedules/652,595959,FFFFFF
+653,1,653,Montera - MacArthur,,3,http://www.actransit.org/bus-lines-schedules/653,595959,FFFFFF
+654,1,654,Skyline High - 35th Ave.,,3,http://www.actransit.org/bus-lines-schedules/654,595959,FFFFFF
+655,1,655,Montera - 35th Ave.,,3,http://www.actransit.org/bus-lines-schedules/655,595959,FFFFFF
+657,1,657,Oak High - Oak Tech - MacArthur,,3,http://www.actransit.org/bus-lines-schedules/657,595959,FFFFFF
+658,1,658,Skyline - Bret Harte - MacArthur,,3,http://www.actransit.org/bus-lines-schedules/658,595959,FFFFFF
+660,1,660,Montera - Broadway Terrace,,3,http://www.actransit.org/bus-lines-schedules/660,595959,FFFFFF
+662,1,662,Skyline High - Broadway Terrace,,3,http://www.actransit.org/bus-lines-schedules/662,595959,FFFFFF
+663,1,663,Encinal - South Shore - High St.,,3,http://www.actransit.org/bus-lines-schedules/663,595959,FFFFFF
+667,1,667,Korematsu - E.C. - No. Richmond,,3,http://www.actransit.org/bus-lines-schedules/667,595959,FFFFFF
+669,1,669,Soskin Middle - San Pablo Dam,,3,http://www.actransit.org/bus-lines-schedules/669,595959,FFFFFF
+67,1,67,Spruce - Oxford,,3,http://www.actransit.org/bus-lines-schedules/67,07B5D0,000000
+675,1,675,Korematsu - El Cerrito - Carlson,,3,http://www.actransit.org/bus-lines-schedules/675,595959,FFFFFF
+677,1,677,Montera - Broadway Terrace,,3,http://www.actransit.org/bus-lines-schedules/677,595959,FFFFFF
+678,1,678,De Anza - Soskin - Fairmede,,3,http://www.actransit.org/bus-lines-schedules/678,595959,FFFFFF
+680,1,680,Bishop O'Dowd High - MacArthur,,3,http://www.actransit.org/bus-lines-schedules/680,595959,FFFFFF
+681,1,681,DeJean - Cutting - Macdonald,,3,http://www.actransit.org/bus-lines-schedules/681,595959,FFFFFF
+682,1,682,Bishop O'Dowd High - Montclair,,3,http://www.actransit.org/bus-lines-schedules/682,595959,FFFFFF
+683,1,683,Montclair - Bishop O'Dowd High,,3,http://www.actransit.org/bus-lines-schedules/683,595959,FFFFFF
+684,1,684,El Cerrito - Arlington - Garvin,,3,http://www.actransit.org/bus-lines-schedules/684,595959,FFFFFF
+687,1,687,Lincoln Middle - Bay Farm,,3,http://www.actransit.org/bus-lines-schedules/687,595959,FFFFFF
+688,1,688,St. Mary's College - Montclair,,3,http://www.actransit.org/bus-lines-schedules/688,595959,FFFFFF
+689,1,689,De Anza - Soskin - CC College,,3,http://www.actransit.org/bus-lines-schedules/689,595959,FFFFFF
+696,1,696,Oakland Tech - Montclair,,3,http://www.actransit.org/bus-lines-schedules/696,595959,FFFFFF
+7,1,7,Arlington - Shattuck - Stanford,,3,http://www.actransit.org/bus-lines-schedules/7,07B5D0,000000
+70,1,70,Rheem - San Pablo Dam - Appian,,3,http://www.actransit.org/bus-lines-schedules/70,2B589C,FFFFFF
+701,1,701,Pittsburg/BP Transbay Early Bird,,3,http://www.actransit.org/bus-lines-schedules/701,492F92,FFFFFF
+702,1,702,Pleas Hill Transbay Early Bird,,3,http://www.actransit.org/bus-lines-schedules/702,492F92,FFFFFF
+703,1,703,Dubl/Plsntn Transbay Early Bird,,3,http://www.actransit.org/bus-lines-schedules/703,492F92,FFFFFF
+71,1,71,Parchester - Rumrill - Carlson,,3,http://www.actransit.org/bus-lines-schedules/71,2B589C,FFFFFF
+72,1,72,CCC - San Pablo,,3,http://www.actransit.org/bus-lines-schedules/72,2B589C,FFFFFF
+72L,1,72L,San Pablo Limited,,3,http://www.actransit.org/bus-lines-schedules/72L,2B589C,FFFFFF
+72M,1,72M,Macdonald - San Pablo,,3,http://www.actransit.org/bus-lines-schedules/72M,2B589C,FFFFFF
+73,1,73,73rd Ave. - Coliseum - Airport,,3,http://www.actransit.org/bus-lines-schedules/73,2B589C,FFFFFF
+74,1,74,San Pablo Dam - 23rd St.,,3,http://www.actransit.org/bus-lines-schedules/74,2B589C,FFFFFF
+76,1,76,Cutting - Market - Moyers,,3,http://www.actransit.org/bus-lines-schedules/76,2B589C,FFFFFF
+800,1,800,Rich - Oak Transbay All Nighter,,3,http://www.actransit.org/bus-lines-schedules/800,BC8E2D,000000
+801,1,801,E 14th - Mission  All Nighter,,3,http://www.actransit.org/bus-lines-schedules/801,BC8E2D,000000
+802,1,802,San Pablo All Nighter,,3,http://www.actransit.org/bus-lines-schedules/802,BC8E2D,000000
+805,1,805,MacArthur - Airport All Nighter,,3,http://www.actransit.org/bus-lines-schedules/805,BC8E2D,000000
+840,1,840,Foothill - Eastmont All Nighter,,3,http://www.actransit.org/bus-lines-schedules/840,BC8E2D,000000
+851,1,851,Santa Clara-Broadway All Nighter,,3,http://www.actransit.org/bus-lines-schedules/851,BC8E2D,000000
+86,1,86,Winton - Industrial - Tennyson,,3,http://www.actransit.org/bus-lines-schedules/86,2B589C,FFFFFF
+88,1,88,Sacramento - Market- Oakland Ave,,3,http://www.actransit.org/bus-lines-schedules/88,2B589C,FFFFFF
+9,1,9,E. 14th St. - Mission,,3,http://www.actransit.org/bus-lines-schedules/9,A30D11,FFFFFF
+90,1,90,85th Ave. - Elmhurst - 90th Ave.,,3,http://www.actransit.org/bus-lines-schedules/90,2B589C,FFFFFF
+93,1,93,Ashland - San Lorenzo - A St.,,3,http://www.actransit.org/bus-lines-schedules/93,07B5D0,000000
+95,1,95,D St. - Maud - Fairview,,3,http://www.actransit.org/bus-lines-schedules/95,07B5D0,000000
+96,1,96,Alameda Pt. - 14th Ave. - Dimond,,3,http://www.actransit.org/bus-lines-schedules/96,2B589C,FFFFFF
+97,1,97,Hesperian - Alvarado - Decoto,,3,http://www.actransit.org/bus-lines-schedules/97,2B589C,FFFFFF
+98,1,98,Eastmont - 98th Ave. - Edgewater,,3,http://www.actransit.org/bus-lines-schedules/98,2B589C,FFFFFF
+E,1,E,Tunnel Rd. - Claremont Transbay,,3,http://www.actransit.org/bus-lines-schedules/E,BC8E2D,000000
+F,1,F,Adeline - Market Transbay,,3,http://www.actransit.org/bus-lines-schedules/F,2B589C,FFFFFF
+FS,1,FS,Shattuck - University Transbay,,3,http://www.actransit.org/bus-lines-schedules/FS,BC8E2D,000000
+G,1,G,Colusa - Solano Transbay,,3,http://www.actransit.org/bus-lines-schedules/G,BC8E2D,000000
+J,1,J,Sacramento -  Christie Transbay,,3,http://www.actransit.org/bus-lines-schedules/J,BC8E2D,000000
+L,1,L,San Pablo - Pierce Transbay,,3,http://www.actransit.org/bus-lines-schedules/L,BC8E2D,000000
+NL,1,NL,MacArthur Transbay Limited,,3,http://www.actransit.org/bus-lines-schedules/NL,2B589C,FFFFFF
+NX,1,NX,Grand Lake - Laurel  Transbay,,3,http://www.actransit.org/bus-lines-schedules/NX,BC8E2D,000000
+NX3,1,NX3,MacArthur - Eastmont Transbay,,3,http://www.actransit.org/bus-lines-schedules/NX3,BC8E2D,000000
+O,1,O,Santa Clara - Encinal Transbay,,3,http://www.actransit.org/bus-lines-schedules/O,2B589C,FFFFFF
+P,1,P,Piedmont - Oakland Ave. Transbay,,3,http://www.actransit.org/bus-lines-schedules/P,BC8E2D,000000
+U,1,U,Stanford - Dumbarton - Fremont,,3,http://www.actransit.org/bus-lines-schedules/U,BC8E2D,000000
+V,1,V,Montclair - Park Blvd. Transbay,,3,http://www.actransit.org/bus-lines-schedules/V,BC8E2D,000000
+W,1,W,Bay Farm - South Shore Transbay,,3,http://www.actransit.org/bus-lines-schedules/W,BC8E2D,000000

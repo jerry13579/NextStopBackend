@@ -1,0 +1,2 @@
+feed_publisher_name,feed_publisher_url,feed_lang,feed_start_date,feed_end_date,feed_version,feed_contact_email,feed_contact_url
+AC TRANSIT,http://www.actransit.org,en,20260405,20260613,S1000251,DevSupport@actransit.org,https://api.actransit.org/transit

@@ -1,0 +1,6 @@
+fare_id,price,currency_type,payment_method,transfers,transfer_duration
+L33,2.75,USD,0,0,
+L33_E,2.75,USD,0,0,
+L33_W,2.75,USD,0,0,
+T41,6.50,USD,0,0,
+TL41,6.50,USD,0,0,
