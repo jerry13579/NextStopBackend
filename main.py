@@ -1802,6 +1802,30 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/debug/actransit")
+def debug_actransit():
+    if not ACTRANSIT_API_KEY:
+        return {"status": "error", "detail": "ACTRANSIT_API_KEY not set"}
+    import time
+    # Test 1: nearby stops around UC Berkeley
+    t0 = time.time()
+    try:
+        stops, source = _fetch_nearby_stops(37.8719, -122.2585)
+        stops_ms = int((time.time() - t0) * 1000)
+        stop_result = {"status": "ok", "count": len(stops), "ms": stops_ms}
+    except Exception as e:
+        stop_result = {"status": "error", "detail": str(e), "ms": int((time.time() - t0) * 1000)}
+    # Test 2: predictions for stop 51303 (Telegraph & Bancroft — common AC Transit stop)
+    t1 = time.time()
+    try:
+        preds, _ = _fetch_predictions("51303")
+        preds_ms = int((time.time() - t1) * 1000)
+        pred_result = {"status": "ok", "count": len(preds), "ms": preds_ms}
+    except Exception as e:
+        pred_result = {"status": "error", "detail": str(e), "ms": int((time.time() - t1) * 1000)}
+    return {"nearby_stops": stop_result, "predictions": pred_result}
+
+
 @app.post("/auth/register", response_model=AuthResponse)
 def register_user(data: AuthRequest):
     if not data.email.endswith("@berkeley.edu"):
