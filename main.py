@@ -14,10 +14,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, List, Any
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 load_dotenv()
 ACTRANSIT_API_KEY = os.getenv("ACTRANSIT_API_KEY")
 GOOGLE_MAPS_API = os.getenv("GOOGLE_MAPS_API")
+AC_TRANSIT_TIMEZONE = ZoneInfo("America/Los_Angeles")
 _raw_database_path = os.getenv("DATABASE_PATH", "nextstop.db")
 if os.path.isabs(_raw_database_path):
     DATABASE_PATH = _raw_database_path
@@ -265,8 +267,16 @@ def _parse_departure(value: str) -> datetime:
     return departure
 
 
+def _ac_transit_now(now: Optional[datetime] = None) -> datetime:
+    if now is None:
+        return datetime.now(AC_TRANSIT_TIMEZONE)
+    if now.tzinfo is None:
+        return now.replace(tzinfo=AC_TRANSIT_TIMEZONE)
+    return now.astimezone(AC_TRANSIT_TIMEZONE)
+
+
 def _minutes_until_departure(value: str) -> int:
-    minutes = int((_parse_departure(value) - datetime.now().astimezone()).total_seconds() // 60)
+    minutes = int((_parse_departure(value) - _ac_transit_now()).total_seconds() // 60)
     return max(minutes, 1)
 
 
@@ -1516,7 +1526,7 @@ def _match_stop_to_gtfs_stop(stop: dict) -> Optional[dict]:
 
 
 def _active_gtfs_service_ids(now: Optional[datetime] = None) -> set[str]:
-    local_now = now or datetime.now().astimezone()
+    local_now = _ac_transit_now(now)
     date_key = local_now.strftime("%Y%m%d")
     weekday_key = local_now.strftime("%A").lower()
     active_services: set[str] = set()
@@ -1556,7 +1566,7 @@ def _prediction_is_upcoming(prediction: dict, now: Optional[datetime] = None) ->
         departure = _parse_departure(departure_value)
     except ValueError:
         return False
-    comparison_now = now or datetime.now().astimezone()
+    comparison_now = _ac_transit_now(now)
     return departure > comparison_now
 
 
@@ -1565,7 +1575,7 @@ def _scheduled_predictions_for_stop(stop: dict, now: Optional[datetime] = None) 
     if not gtfs_stop:
         return []
 
-    local_now = now or datetime.now().astimezone()
+    local_now = _ac_transit_now(now)
     now_seconds = local_now.hour * 3600 + local_now.minute * 60 + local_now.second
     active_service_ids = _active_gtfs_service_ids(local_now)
     if not active_service_ids:
