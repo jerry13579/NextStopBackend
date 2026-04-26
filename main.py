@@ -6,6 +6,7 @@ import secrets
 import sqlite3
 import requests
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
@@ -2634,23 +2635,31 @@ def plan_trip(
     prediction_sources: List[str] = []
     available_buses: List[dict] = []
 
-    for stop in candidate_stops[:6]:
+    def _fetch_stop_buses(stop: dict):
         predictions, prediction_source = _fetch_predictions(stop["stop_id"])
         if not predictions:
             predictions = _scheduled_predictions_for_stop(stop)
             if predictions:
                 prediction_source = "schedule"
-        prediction_sources.append(prediction_source)
-        available_buses.extend(
-            _build_available_buses(
-                predictions,
-                start_marker,
-                stop,
-                destination_marker,
-                destination_stop_id,
-                google_candidates,
-            )
+        buses = _build_available_buses(
+            predictions,
+            start_marker,
+            stop,
+            destination_marker,
+            destination_stop_id,
+            google_candidates,
         )
+        return prediction_source, buses
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {executor.submit(_fetch_stop_buses, stop): stop for stop in candidate_stops[:6]}
+        for future in as_completed(futures):
+            try:
+                prediction_source, buses = future.result()
+                prediction_sources.append(prediction_source)
+                available_buses.extend(buses)
+            except Exception:
+                pass
 
     deduped_buses: Dict[str, dict] = {}
     for bus in available_buses:
