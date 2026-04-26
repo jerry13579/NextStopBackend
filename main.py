@@ -76,6 +76,11 @@ app.add_middleware(
 )
 
 latest_bus_metrics: Dict[str, dict] = {}
+vehicle_attributes_cache: Dict[str, tuple[datetime, Optional[dict]]] = {}
+VEHICLE_ATTRIBUTES_TTL_SECONDS = 90
+ROUTE_PLAN_MAX_STOPS = 4
+ROUTE_PLAN_MAX_PREDICTIONS_PER_STOP = 2
+ROUTE_PLAN_MAX_TOTAL_OPTIONS = 8
 
 # Session configuration
 SESSION_EXPIRY_HOURS = 24
@@ -291,13 +296,13 @@ def _distance_meters(point_a: dict, point_b: dict) -> float:
 
 
 def _request_json(url: str, params: Optional[dict] = None) -> Any:
-    response = requests.get(url, params=params, timeout=10)
+    response = requests.get(url, params=params, timeout=6)
     response.raise_for_status()
     return response.json()
 
 
 def _post_json(url: str, payload: dict, headers: Optional[dict] = None) -> Any:
-    response = requests.post(url, json=payload, headers=headers, timeout=10)
+    response = requests.post(url, json=payload, headers=headers, timeout=6)
     response.raise_for_status()
     return response.json()
 
@@ -428,6 +433,12 @@ def _fetch_vehicle_realtime_attributes(vehicle_id: str, route_name: str) -> Opti
     if not ACTRANSIT_API_KEY:
         return None
 
+    cache_key = f"{route_name}:{vehicle_id}"
+    now = datetime.now(timezone.utc)
+    cached = vehicle_attributes_cache.get(cache_key)
+    if cached and (now - cached[0]).total_seconds() < VEHICLE_ATTRIBUTES_TTL_SECONDS:
+        return cached[1]
+
     try:
         data = _request_json(
             "https://api.actransit.org/transit/vehicle/realtimeattributes",
@@ -438,9 +449,13 @@ def _fetch_vehicle_realtime_attributes(vehicle_id: str, route_name: str) -> Opti
             },
         )
         if isinstance(data, list):
-            return data[0] if data else None
-        return data or None
+            attributes = data[0] if data else None
+        else:
+            attributes = data or None
+        vehicle_attributes_cache[cache_key] = (now, attributes)
+        return attributes
     except requests.RequestException:
+        vehicle_attributes_cache[cache_key] = (now, None)
         return None
 
 
@@ -1294,6 +1309,64 @@ def _capacity_for_prediction(prediction: dict, route_name: str) -> tuple[Optiona
     }
 
 
+def _google_candidate_score_for_prediction(prediction: dict, google_candidates: List[dict]) -> int:
+    if not google_candidates:
+        return 0
+    route_name = str(prediction.get("RouteName") or "").strip()
+    route_ids = set(_resolve_route_ids(route_name))
+    prediction_headsign = prediction.get("Destination") or prediction.get("DirectionText")
+    best_score = 0
+    for candidate in google_candidates:
+        score = 0
+        candidate_route = (candidate.get("route_short_name") or "").strip()
+        candidate_route_id = (candidate.get("route_id") or "").strip()
+        if candidate_route and candidate_route == route_name:
+            score += 20
+        if candidate_route_id and candidate_route_id in route_ids:
+            score += 20
+        if prediction_headsign and _headsign_is_compatible(prediction_headsign, candidate.get("trip_headsign")):
+            score += 10
+        best_score = max(best_score, score)
+    return best_score
+
+
+def _select_route_planning_predictions(
+    predictions: List[dict],
+    google_candidates: Optional[List[dict]] = None,
+    limit: int = ROUTE_PLAN_MAX_PREDICTIONS_PER_STOP,
+) -> List[dict]:
+    selected: List[dict] = []
+    seen: set[str] = set()
+
+    def sort_key(prediction: dict) -> tuple[int, datetime]:
+        score = _google_candidate_score_for_prediction(prediction, google_candidates or [])
+        try:
+            departure = _parse_departure(prediction["PredictedDeparture"])
+        except (KeyError, ValueError):
+            departure = datetime.max.replace(tzinfo=timezone.utc)
+        return (-score, departure)
+
+    for prediction in sorted(predictions, key=sort_key):
+        try:
+            eta = _minutes_until_departure(prediction["PredictedDeparture"])
+        except (KeyError, ValueError):
+            continue
+        if eta > 60:
+            continue
+        route_name = str(prediction.get("RouteName") or "").strip()
+        headsign = str(prediction.get("Destination") or prediction.get("DirectionText") or "").strip()
+        direction = str(prediction.get("DirectionId") or "").strip()
+        trip_id = str(prediction.get("TripId") or "").strip()
+        key = "|".join([route_name, headsign, direction, trip_id])
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(prediction)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
 def _duration_to_minutes(value: Optional[str], fallback_minutes: int = 1) -> int:
     if not value:
         return fallback_minutes
@@ -1684,18 +1757,9 @@ def _build_available_buses(
         route_name = prediction.get("RouteName", f"Route {index + 1}")
         delay_seconds = int(prediction.get("PredictedDelayInSeconds", 0) or 0)
         delay_minutes = round(delay_seconds / 60)
-        capacity, occupancy = _capacity_for_prediction(prediction, route_name)
-        vehicle_attributes = occupancy
         eta = _minutes_until_departure(prediction["PredictedDeparture"])
         if eta > 60:
             continue
-        seats_left = None if capacity is None else max(45 - round(45 * capacity / 100), 1)
-        bus_position = None
-        if vehicle_attributes and vehicle_attributes.get("last_position_lat") is not None:
-            bus_position = {
-                "lat": vehicle_attributes["last_position_lat"],
-                "lng": vehicle_attributes["last_position_lng"],
-            }
         prediction_direction_id = prediction.get("DirectionId")
         if prediction_direction_id is not None:
             try:
@@ -1733,6 +1797,15 @@ def _build_available_buses(
         prediction_headsign = prediction.get("Destination") or prediction.get("DirectionText")
         if prediction_headsign and not _headsign_is_compatible(trip_headsign, prediction_headsign):
             continue
+        capacity, occupancy = _capacity_for_prediction(prediction, route_name)
+        vehicle_attributes = occupancy
+        seats_left = None if capacity is None else max(45 - round(45 * capacity / 100), 1)
+        bus_position = None
+        if vehicle_attributes and vehicle_attributes.get("last_position_lat") is not None:
+            bus_position = {
+                "lat": vehicle_attributes["last_position_lat"],
+                "lng": vehicle_attributes["last_position_lng"],
+            }
         fullness = capacity if capacity is not None else occupancy.get("estimated_occupancy_percentage") if occupancy else None
 
         buses.append(
@@ -1793,7 +1866,7 @@ def _fetch_predictions(stop_id: str) -> tuple[List[dict], str]:
 
     url = f"https://api.actransit.org/transit/stops/{stop_id}/predictions?token={ACTRANSIT_API_KEY}"
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=6)
         response.raise_for_status()
         data = response.json() or []
         live_predictions = [
@@ -2700,6 +2773,7 @@ def plan_trip(
             predictions = _scheduled_predictions_for_stop(stop)
             if predictions:
                 prediction_source = "schedule"
+        predictions = _select_route_planning_predictions(predictions, google_candidates)
         buses = _build_available_buses(
             predictions,
             start_marker,
@@ -2710,8 +2784,30 @@ def plan_trip(
         )
         return prediction_source, buses
 
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        futures = {executor.submit(_fetch_stop_buses, stop): stop for stop in candidate_stops[:6]}
+    google_boarding_stop_ids = {
+        str(candidate.get("boarding_stop_id"))
+        for candidate in google_candidates
+        if candidate.get("boarding_stop_id")
+    }
+    route_planning_stops: List[dict] = []
+    route_planning_stop_ids: set[str] = set()
+    for stop in candidate_stops:
+        if stop["stop_id"] not in google_boarding_stop_ids:
+            continue
+        route_planning_stops.append(stop)
+        route_planning_stop_ids.add(stop["stop_id"])
+        if len(route_planning_stops) >= ROUTE_PLAN_MAX_STOPS:
+            break
+    for stop in candidate_stops:
+        if len(route_planning_stops) >= ROUTE_PLAN_MAX_STOPS:
+            break
+        if stop["stop_id"] in route_planning_stop_ids:
+            continue
+        route_planning_stops.append(stop)
+        route_planning_stop_ids.add(stop["stop_id"])
+    max_workers = max(1, min(ROUTE_PLAN_MAX_STOPS, len(route_planning_stops)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_fetch_stop_buses, stop): stop for stop in route_planning_stops}
         for future in as_completed(futures):
             try:
                 prediction_source, buses = future.result()
@@ -2751,7 +2847,7 @@ def plan_trip(
             bus.get("total_trip_time_minutes", 10**9),
             bus.get("eta", 10**9),
         ),
-    )[:6]
+    )[:ROUTE_PLAN_MAX_TOTAL_OPTIONS]
 
     if prediction_sources and any(item == "live" for item in prediction_sources):
         source = "live"
