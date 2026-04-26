@@ -55,6 +55,10 @@ default_origins = [
     "http://127.0.0.1:5173",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "capacitor://localhost",
+    "ionic://localhost",
+    "http://localhost",
+    "https://localhost",
 ]
 
 configured_origins = [
@@ -65,7 +69,7 @@ configured_origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=configured_origins or default_origins,
+    allow_origins=sorted(set(default_origins + configured_origins)),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
