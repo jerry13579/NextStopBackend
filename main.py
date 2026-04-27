@@ -1941,18 +1941,6 @@ def _schedule_commute_preview_for_event(
     origin_stops = _nearest_gtfs_stops(origin_point, limit=CALENDAR_COMMUTE_PREVIEW_STOP_LIMIT)
     options: List[CalendarCommuteOption] = []
 
-    direct_leave_by = class_start - timedelta(minutes=direct_walk["duration_minutes"])
-    options.append(
-        CalendarCommuteOption(
-            type="walk",
-            leave_by=direct_leave_by.isoformat(),
-            depart_at=None,
-            arrive_at=class_start.isoformat(),
-            total_trip_time_minutes=direct_walk["duration_minutes"],
-            walk_time_minutes=direct_walk["duration_minutes"],
-        )
-    )
-
     for stop in origin_stops:
         try:
             walk_to_stop = _google_route(origin_point, {"lat": stop["lat"], "lng": stop["lng"]})
@@ -1967,15 +1955,12 @@ def _schedule_commute_preview_for_event(
             for stop_time in stop_times_by_stop.get(stop["stop_id"], [])
             if stop_time.get("departure_seconds") is not None
             and stop_time["departure_seconds"] <= latest_boarding_seconds
+            and (trip := trips_by_id.get(stop_time["trip_id"])) is not None
+            and (trip.get("service_id") or "").strip() in active_service_ids
         ][-CALENDAR_COMMUTE_PREVIEW_STOP_TIME_LIMIT:]
 
         for stop_time in candidate_stop_times:
-            trip = trips_by_id.get(stop_time["trip_id"])
-            if not trip:
-                continue
-            service_id = (trip.get("service_id") or "").strip()
-            if service_id not in active_service_ids:
-                continue
+            trip = trips_by_id[stop_time["trip_id"]]
             route_id = (trip.get("route_id") or "").strip()
             route = routes_by_id.get(route_id, {})
             route_name = (route.get("route_short_name") or route_id).strip() or route_id
