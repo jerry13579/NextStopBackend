@@ -1486,15 +1486,16 @@ def _google_route(start: dict, end: dict, travel_mode: str = "WALK") -> dict:
         raise HTTPException(status_code=503, detail="Google route planning is unavailable")
 
 
-def _google_transit_candidates(start: dict, end: dict) -> List[dict]:
+def _google_transit_candidates(start: dict, end: dict, departure_time: Optional[datetime] = None) -> List[dict]:
     if not GOOGLE_MAPS_API:
         return []
 
+    depart_at = (departure_time or datetime.now(timezone.utc)).astimezone(timezone.utc)
     payload = {
         "origin": {"location": {"latLng": {"latitude": start["lat"], "longitude": start["lng"]}}},
         "destination": {"location": {"latLng": {"latitude": end["lat"], "longitude": end["lng"]}}},
         "travelMode": "TRANSIT",
-        "departureTime": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "departureTime": depart_at.isoformat().replace("+00:00", "Z"),
         "computeAlternativeRoutes": True,
         "polylineQuality": "HIGH_QUALITY",
         "polylineEncoding": "ENCODED_POLYLINE",
@@ -1938,7 +1939,40 @@ def _schedule_commute_preview_for_event(
     trips_by_id = _load_gtfs_trips_by_id()
     routes_by_id = _load_gtfs_routes_by_id()
     stop_times_by_stop = _load_gtfs_stop_times_by_stop()
+
+    # Ask Google which transit routes run between origin and destination at class time.
+    # This is the same call the live /plan-trip endpoint makes, but with a future departure
+    # time so Google returns routes that actually run at 5:30 AM (or whenever the class is),
+    # not whatever happens to be running right now.
+    google_candidates = _google_transit_candidates(origin_point, destination_point, departure_time=class_start)
+
+    # Build the set of origin stops: nearest GTFS stops + any boarding stops Google suggested.
+    # This mirrors the live routing logic so we find the same stops Google would use.
     origin_stops = _nearest_gtfs_stops(origin_point, limit=CALENDAR_COMMUTE_PREVIEW_STOP_LIMIT)
+    seen_stop_ids = {stop["stop_id"] for stop in origin_stops}
+    for candidate in google_candidates:
+        boarding_stop_id = str(candidate.get("boarding_stop_id") or "")
+        boarding_point = candidate.get("boarding_stop_point") or {}
+        if not boarding_stop_id or boarding_stop_id in seen_stop_ids:
+            continue
+        if boarding_point.get("lat") is None or boarding_point.get("lng") is None:
+            continue
+        origin_stops.append({
+            "stop_id": boarding_stop_id,
+            "stop_name": candidate.get("boarding_stop_name") or "Boarding stop",
+            "lat": boarding_point["lat"],
+            "lng": boarding_point["lng"],
+        })
+        seen_stop_ids.add(boarding_stop_id)
+
+    # Index Google candidates by boarding stop so we can pass the right one as a hint
+    # to _build_transit_segment, which uses it to prefer the correct route direction.
+    google_by_boarding: Dict[str, List[dict]] = {}
+    for candidate in google_candidates:
+        sid = str(candidate.get("boarding_stop_id") or "")
+        if sid:
+            google_by_boarding.setdefault(sid, []).append(candidate)
+
     options: List[CalendarCommuteOption] = []
 
     for stop in origin_stops:
@@ -1949,6 +1983,8 @@ def _schedule_commute_preview_for_event(
         latest_boarding_seconds = class_seconds - walk_to_stop["duration_minutes"] * 60
         if latest_boarding_seconds <= 0:
             continue
+
+        stop_candidates = google_by_boarding.get(stop["stop_id"], [])
 
         candidate_stop_times = [
             stop_time
@@ -1970,6 +2006,13 @@ def _schedule_commute_preview_for_event(
             except ValueError:
                 direction_id = None
 
+            # Pick the Google candidate whose route matches this trip, falling back to the
+            # first available candidate so _build_transit_segment gets a direction hint.
+            google_candidate = next(
+                (c for c in stop_candidates if (c.get("route_id") == route_id or c.get("route_short_name") == route_name)),
+                stop_candidates[0] if stop_candidates else None,
+            )
+
             segment = _build_transit_segment(
                 route_name=route_name,
                 trip_id=trip.get("trip_id"),
@@ -1977,7 +2020,7 @@ def _schedule_commute_preview_for_event(
                 boarding_stop_id=stop["stop_id"],
                 destination_stop_id=destination_stop_id,
                 destination_point=destination_point,
-                google_candidate=None,
+                google_candidate=google_candidate,
             )
             if not segment:
                 continue
