@@ -348,7 +348,21 @@ def _route_vehicle_matches_prediction_direction(prediction: dict, direction_id: 
     if direction_id is None:
         return True
     prediction_direction = _try_int(prediction.get("DirectionId"))
-    return prediction_direction is not None and prediction_direction == direction_id
+    if prediction_direction is not None:
+        return prediction_direction == direction_id
+    # AC Transit's /stops/{id}/predictions response omits DirectionId — fall back to
+    # mapping the prediction's TripId through GTFS-static trip directions.
+    trip_id = prediction.get("TripId")
+    if trip_id is None:
+        return True
+    try:
+        from gtfs_service import _gtfs_trip_directions
+        trip_direction = _gtfs_trip_directions().get(str(trip_id))
+    except HTTPException:
+        return True
+    if trip_direction is None:
+        return True
+    return trip_direction == direction_id
 
 
 def _prediction_departure_matches(prediction: dict, selected_departure_time: Optional[str]) -> bool:
@@ -392,9 +406,9 @@ def get_route_vehicles(
     selected_prediction_trip_id: Optional[str] = None,
     selected_departure_time: Optional[str] = None,
 ):
-    from gtfs_service import _load_gtfs_trips_by_id
-    from telemetry_service import _vehicle_occupancy_for_marker
-    vehicles = _fetch_route_vehicles(route_id)
+    from gtfs_service import _headsign_is_compatible, _load_gtfs_trips_by_id
+    from telemetry_service import _vehicle_occupancy_for_marker, occupancy_label_from_psgld
+    vehicles = _fetch_route_vehicles(route_id, direction_id=direction_id)
     trips_by_id = _load_gtfs_trips_by_id()
     prediction_by_vehicle = {}
     route_ids = set(_resolve_route_ids(route_id))
@@ -417,6 +431,12 @@ def get_route_vehicles(
         selected_departure_time,
     )
 
+    selected_headsign: Optional[str] = None
+    if selected_prediction_trip_id:
+        selected_trip = trips_by_id.get(str(selected_prediction_trip_id).strip())
+        if selected_trip:
+            selected_headsign = (selected_trip.get("trip_headsign") or "").strip() or None
+
     response_vehicles = []
     for vehicle in vehicles:
         if vehicle.get("Latitude") is None or vehicle.get("Longitude") is None:
@@ -426,6 +446,8 @@ def get_route_vehicles(
         current_trip = trips_by_id.get(current_trip_id or "")
         current_trip_direction = _try_int((current_trip or {}).get("direction_id"))
         prediction = prediction_by_vehicle.get(vehicle_key or "")
+        live_destination = vehicle.get("destination")
+        psgld_value = vehicle.get("psgld")
         exact_selected = bool(selected_vehicle_key and vehicle_key == selected_vehicle_key)
         prediction_selected = bool(
             not exact_selected
@@ -437,7 +459,22 @@ def get_route_vehicles(
             and current_trip_direction is not None
             and current_trip_direction == direction_id
         )
-        if direction_id is not None and not (exact_selected or prediction_selected or gtfs_direction_verified):
+        headsign_match = bool(
+            direction_id is not None
+            and not gtfs_direction_verified
+            and selected_headsign
+            and _headsign_is_compatible(live_destination or (current_trip or {}).get("trip_headsign"), selected_headsign)
+        )
+        gtfs_direction_conflict = bool(
+            direction_id is not None
+            and current_trip_direction is not None
+            and current_trip_direction != direction_id
+        )
+        if (
+            direction_id is not None
+            and gtfs_direction_conflict
+            and not (exact_selected or prediction_selected or headsign_match)
+        ):
             continue
         if exact_selected:
             direction_match_source = "selected_vehicle"
@@ -445,10 +482,18 @@ def get_route_vehicles(
             direction_match_source = "boarding_prediction"
         elif gtfs_direction_verified:
             direction_match_source = "gtfs_trip"
+        elif headsign_match:
+            direction_match_source = "headsign"
         else:
             direction_match_source = None
         is_selected_vehicle = exact_selected or prediction_selected
         arrival_minutes = _minutes_until_departure(prediction["PredictedDeparture"]) if prediction else None
+        occupancy_percent = _vehicle_occupancy_for_marker(
+            str(vehicle.get("VehicleId")) if vehicle.get("VehicleId") is not None else None,
+            route_id,
+            psgld=psgld_value,
+        )
+        occupancy_status = occupancy_label_from_psgld(psgld_value)
         response_vehicles.append({
             "vehicle_id": vehicle.get("VehicleId"),
             "trip_id": vehicle.get("CurrentTripId"),
@@ -458,18 +503,26 @@ def get_route_vehicles(
             "reported_at": vehicle.get("TimeLastReported"),
             "arrival_minutes": arrival_minutes,
             "arrival_source": "boarding_prediction" if prediction else None,
-            "headsign": (prediction.get("Destination") or prediction.get("DirectionText")) if prediction else (current_trip or {}).get("trip_headsign"),
-            "occupancy_percent": _vehicle_occupancy_for_marker(str(vehicle.get("VehicleId")) if vehicle.get("VehicleId") is not None else None, route_id),
+            "headsign": (prediction.get("Destination") or prediction.get("DirectionText")) if prediction else (live_destination or (current_trip or {}).get("trip_headsign")),
+            "occupancy_percent": occupancy_percent,
+            "occupancy_status": occupancy_status,
             "is_selected_vehicle": is_selected_vehicle,
             "match_confidence": "exact_vehicle" if exact_selected else "boarding_prediction" if prediction_selected else "route_direction_only",
-            "is_direction_verified": bool(direction_match_source),
+            "is_direction_verified": direction_match_source in {"selected_vehicle", "boarding_prediction", "gtfs_trip"},
             "direction_match_source": direction_match_source,
         })
 
+    direction_priority = {
+        "selected_vehicle": 0,
+        "boarding_prediction": 1,
+        "gtfs_trip": 2,
+        "headsign": 3,
+    }
     return sorted(
         response_vehicles,
         key=lambda vehicle: (
             not vehicle["is_selected_vehicle"],
+            direction_priority.get(vehicle.get("direction_match_source") or "", 4),
             vehicle["arrival_minutes"] if isinstance(vehicle.get("arrival_minutes"), int) else 10**9,
         ),
     )

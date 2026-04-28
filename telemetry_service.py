@@ -13,6 +13,36 @@ vehicle_attributes_cache: Dict[str, tuple[datetime, Optional[dict]]] = {}
 _metrics_lock = Lock()
 _vehicle_attributes_lock = Lock()
 
+PSGLD_PERCENT = {
+    "EMPTY": 10,
+    "HALF_EMPTY": 50,
+    "STANDING_ROOM_ONLY": 80,
+    "FULL": 95,
+}
+
+PSGLD_LABEL = {
+    "EMPTY": "Empty",
+    "HALF_EMPTY": "Some seats available",
+    "STANDING_ROOM_ONLY": "Standing room only",
+    "FULL": "Full",
+}
+
+
+def _normalize_psgld(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    normalized = str(value).strip().upper().replace(" ", "_").replace("-", "_")
+    return normalized if normalized in PSGLD_PERCENT else None
+
+
+def occupancy_from_psgld(psgld: Optional[str]) -> Optional[int]:
+    return PSGLD_PERCENT.get(_normalize_psgld(psgld) or "")
+
+
+def occupancy_label_from_psgld(psgld: Optional[str]) -> Optional[str]:
+    return PSGLD_LABEL.get(_normalize_psgld(psgld) or "")
+
+
 def _occupancy_from_status_color(color: Optional[str]) -> Optional[int]:
     if not color:
         return None
@@ -166,15 +196,23 @@ def get_bus_metric(bus_id: str) -> Optional[dict]:
         return dict(metric) if metric is not None else None
 
 
-def _vehicle_occupancy_for_marker(vehicle_id: Optional[str], route_name: str) -> Optional[int]:
+def _vehicle_occupancy_for_marker(
+    vehicle_id: Optional[str],
+    route_name: str,
+    psgld: Optional[str] = None,
+) -> Optional[int]:
     if not vehicle_id:
-        return None
+        return occupancy_from_psgld(psgld)
     metric = get_bus_metric(str(vehicle_id))
     if metric and metric.get("crowding_percentage") is not None:
         try:
             return round(float(metric["crowding_percentage"]))
         except (TypeError, ValueError):
-            return None
+            pass
+
+    psgld_percent = occupancy_from_psgld(psgld)
+    if psgld_percent is not None:
+        return psgld_percent
 
     attributes = _fetch_vehicle_realtime_attributes(str(vehicle_id), route_name)
     if not attributes:

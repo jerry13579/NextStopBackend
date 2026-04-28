@@ -110,10 +110,24 @@ def _fetch_service_alert(routes: Optional[List[str]] = None) -> Optional[dict]:
 
     return None
 
-def _fetch_route_vehicles(route_name: str, direction_id: Optional[int] = None) -> List[dict]:
+def _fetch_actrealtime_vehicles(route_name: str) -> List[dict]:
     if not ACTRANSIT_API_KEY:
         return []
+    try:
+        data = _request_json(
+            "https://api.actransit.org/transit/actrealtime/vehicle",
+            {"rt": route_name, "tmres": "s", "token": ACTRANSIT_API_KEY},
+        )
+    except requests.RequestException:
+        return []
+    response = (data or {}).get("bustime-response") if isinstance(data, dict) else None
+    vehicles = (response or {}).get("vehicle") or []
+    return vehicles if isinstance(vehicles, list) else []
 
+
+def _fetch_legacy_route_vehicles(route_name: str) -> List[dict]:
+    if not ACTRANSIT_API_KEY:
+        return []
     try:
         data = _request_json(
             f"https://api.actransit.org/transit/route/{route_name}/vehicles",
@@ -121,23 +135,79 @@ def _fetch_route_vehicles(route_name: str, direction_id: Optional[int] = None) -
         )
     except requests.RequestException:
         return []
+    return data if isinstance(data, list) else []
 
-    vehicles = data if isinstance(data, list) else []
+
+def _parse_actrealtime_timestamp(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    # Format from BusTime: "20260428 14:43:43" or "20260428 14:43"
+    for fmt in ("%Y%m%d %H:%M:%S", "%Y%m%d %H:%M"):
+        try:
+            return datetime.strptime(raw, fmt).isoformat()
+        except ValueError:
+            continue
+    return raw
+
+
+def _normalize_actrealtime_vehicle(entry: dict) -> Optional[dict]:
+    vid = entry.get("vid")
+    if vid is None:
+        return None
+    try:
+        lat = float(entry.get("lat"))
+        lng = float(entry.get("lon"))
+    except (TypeError, ValueError):
+        return None
+    try:
+        heading = int(entry.get("hdg")) if entry.get("hdg") is not None else None
+    except (TypeError, ValueError):
+        heading = None
+    static_trip_id = entry.get("tripid")
+    return {
+        "VehicleId": _try_int(vid) if str(vid).isdigit() else vid,
+        "CurrentTripId": _try_int(static_trip_id) if static_trip_id is not None else None,
+        "Latitude": lat,
+        "Longitude": lng,
+        "Heading": heading,
+        "TimeLastReported": _parse_actrealtime_timestamp(entry.get("tmstmp")),
+        "psgld": entry.get("psgld") or None,
+        "destination": entry.get("des"),
+        "tatripid": entry.get("tatripid"),
+        "delayed": bool(entry.get("dly")),
+        "pattern_id": entry.get("pid"),
+    }
+
+
+def _fetch_route_vehicles(route_name: str, direction_id: Optional[int] = None) -> List[dict]:
+    raw_vehicles = _fetch_actrealtime_vehicles(route_name)
+    normalized: List[dict] = []
+    for entry in raw_vehicles:
+        vehicle = _normalize_actrealtime_vehicle(entry)
+        if vehicle is not None:
+            normalized.append(vehicle)
+
+    if not normalized:
+        # BusTime endpoint silent — fall back to legacy feed so we never go to zero.
+        return _fetch_legacy_route_vehicles(route_name)
+
     if direction_id is None:
-        return vehicles
+        return normalized
 
     try:
         trip_directions = _gtfs_trip_directions()
     except HTTPException:
-        return []
+        # Without GTFS we can't verify direction; return everything rather than zero.
+        return normalized
 
     filtered: List[dict] = []
-    for vehicle in vehicles:
+    for vehicle in normalized:
         trip_id = vehicle.get("CurrentTripId")
-        if trip_id is None:
-            continue
-        trip_direction = trip_directions.get(str(trip_id))
-        if trip_direction is not None and trip_direction == direction_id:
+        trip_direction = trip_directions.get(str(trip_id)) if trip_id is not None else None
+        if trip_direction is None or trip_direction == direction_id:
             filtered.append(vehicle)
     return filtered
 
