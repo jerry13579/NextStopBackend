@@ -1,3 +1,4 @@
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any, List, Optional
@@ -109,6 +110,8 @@ def _decode_polyline(encoded: str) -> List[List[float]]:
 
 
 def _validate_lat_lng(lat: float, lng: float) -> None:
+    if not math.isfinite(lat) or not math.isfinite(lng):
+        raise HTTPException(status_code=400, detail="Latitude and longitude must be finite numbers")
     if lat < -90 or lat > 90:
         raise HTTPException(status_code=400, detail="Latitude must be between -90 and 90")
     if lng < -180 or lng > 180:

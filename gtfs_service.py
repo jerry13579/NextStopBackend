@@ -93,18 +93,6 @@ def _load_gtfs_stops_by_id() -> Dict[str, dict]:
     return stops
 
 
-def _normalize_text(value: Optional[str]) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
-
-
-def _text_tokens(value: Optional[str]) -> set[str]:
-    return {
-        token
-        for token in _normalize_text(value).split()
-        if len(token) >= 3 and token not in {"the", "and", "via", "toward", "towards", "route"}
-    }
-
-
 def _headsign_is_compatible(candidate_headsign: Optional[str], expected_headsign: Optional[str]) -> bool:
     expected = _normalize_text(expected_headsign)
     if not expected:

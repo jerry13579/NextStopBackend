@@ -363,6 +363,9 @@ def get_route_vehicles(route_id: str, direction_id: Optional[int] = None, boardi
 
 @app.get("/plan-trip")
 def plan_trip(destination: str, start: str = "Current location", start_lat: Optional[float] = None, start_lng: Optional[float] = None, destination_lat: Optional[float] = None, destination_lng: Optional[float] = None, mode: str = "full", include_walk: bool = True):
+    normalized_destination = destination.strip()
+    if not normalized_destination:
+        raise HTTPException(status_code=400, detail="destination is required")
     if start_lat is None or start_lng is None:
         raise HTTPException(status_code=400, detail="start_lat and start_lng are required")
     _validate_lat_lng(start_lat, start_lng)
@@ -373,7 +376,13 @@ def plan_trip(destination: str, start: str = "Current location", start_lat: Opti
     normalized_mode = mode.strip().lower()
     if normalized_mode not in {"full", "bus"}:
         raise HTTPException(status_code=400, detail="mode must be 'full' or 'bus'")
-    return build_plan_trip_response(destination=destination.strip(), start=start, start_lat=start_lat, start_lng=start_lng, destination_lat=destination_lat, destination_lng=destination_lng, mode=normalized_mode, include_walk=include_walk)
+    try:
+        return build_plan_trip_response(destination=normalized_destination, start=start.strip() or "Current location", start_lat=start_lat, start_lng=start_lng, destination_lat=destination_lat, destination_lng=destination_lng, mode=normalized_mode, include_walk=include_walk)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"[plan_trip] unexpected route planning failure: {exc!r}")
+        raise HTTPException(status_code=503, detail="Route planning is temporarily unavailable")
 
 
 @app.get("/local-eats", response_model=LocalEatsResponse)

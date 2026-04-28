@@ -42,7 +42,7 @@ The server starts on `http://127.0.0.1:8000`. Check `/health` and `/docs`.
 ```
 ACTRANSIT_API_KEY=       # AC Transit developer portal
 GOOGLE_MAPS_API=         # Google Cloud — Routes, Places, Maps JS APIs enabled
-CORS_ORIGINS=            # Comma-separated allowed origins (defaults to localhost:5173)
+CORS_ORIGINS=            # Optional comma-separated extra origins
 SECRET_KEY=              # Random string used to sign session tokens
 ```
 
@@ -65,9 +65,10 @@ The backend is deployed as an Azure App Service (Python runtime).
 ```
 ACTRANSIT_API_KEY
 GOOGLE_MAPS_API
-CORS_ORIGINS      # must include the Capacitor app origin and any dev URLs
 SECRET_KEY
 ```
+
+`CORS_ORIGINS` is optional. The backend already allows local development and Capacitor/iOS origins by default; set it only when adding a new deployed web frontend origin.
 
 After deploying, verify:
 

@@ -1,11 +1,12 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 import requests
 from fastapi import HTTPException
 
 from common import (
+    _ac_transit_now,
     _distance_meters,
     _get_any,
     _get_stripped,
@@ -23,6 +24,7 @@ from config import (
     ROUTE_PLAN_MAX_PREDICTIONS_PER_STOP,
     ROUTE_PLAN_MAX_STOPS,
     ROUTE_PLAN_MAX_TOTAL_OPTIONS,
+    WALK_SPEED_METERS_PER_MINUTE,
 )
 from google_service import _google_route, _google_transit_candidates
 from gtfs_service import (
@@ -256,37 +258,43 @@ def _normalize_stop(stop: dict) -> dict:
     }
 
 
-def _active_gtfs_service_ids(now: Optional[datetime] = None) -> set[str]:
-    local_now = _ac_transit_now(now)
-    date_key = local_now.strftime("%Y%m%d")
-    weekday_key = local_now.strftime("%A").lower()
-    active_services: set[str] = set()
+def _estimated_walk_route(start: dict, end: dict) -> dict:
+    distance_meters = _distance_meters(start, end)
+    duration_minutes = max(round(distance_meters / WALK_SPEED_METERS_PER_MINUTE), 1)
+    return {
+        "duration_minutes": duration_minutes,
+        "distance_km": round(distance_meters / 1000, 2),
+        "source": "estimated_walk",
+        "geometry": {
+            "type": "LineString",
+            "coordinates": [
+                [start["lng"], start["lat"]],
+                [end["lng"], end["lat"]],
+            ],
+        },
+        "steps": [
+            {
+                "instruction": "Walk to destination",
+                "distance_meters": round(distance_meters),
+                "duration_minutes": duration_minutes,
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [
+                        [start["lng"], start["lat"]],
+                        [end["lng"], end["lat"]],
+                    ],
+                },
+            }
+        ],
+    }
 
-    for row in _load_gtfs_calendar():
-        service_id = _get_stripped(row, "service_id")
-        if not service_id:
-            continue
-        if (row.get(weekday_key) or "0").strip() != "1":
-            continue
-        start_date = _get_stripped(row, "start_date")
-        end_date = _get_stripped(row, "end_date")
-        if start_date and date_key < start_date:
-            continue
-        if end_date and date_key > end_date:
-            continue
-        active_services.add(service_id)
 
-    for row in _load_gtfs_calendar_dates().get(date_key, []):
-        service_id = _get_stripped(row, "service_id")
-        if not service_id:
-            continue
-        exception_type = _get_stripped(row, "exception_type")
-        if exception_type == "1":
-            active_services.add(service_id)
-        elif exception_type == "2":
-            active_services.discard(service_id)
-
-    return active_services
+def _safe_walk_route(start: dict, end: dict) -> dict:
+    try:
+        return _google_route(start, end)
+    except HTTPException as exc:
+        print(f"[plan_trip] Google walking route unavailable; using estimate: {exc!r}")
+        return _estimated_walk_route(start, end)
 
 
 def _prediction_is_upcoming(prediction: dict, now: Optional[datetime] = None) -> bool:
@@ -428,7 +436,7 @@ def _build_one_available_bus(
         if alighting_stop
         else {"lat": stop["lat"], "lng": stop["lng"]}
     )
-    walk_from_stop = _google_route(walk_from_origin, destination_marker)
+    walk_from_stop = _safe_walk_route(walk_from_origin, destination_marker)
 
     trip_headsign = transit_segment.get("trip_headsign") or _get_any(prediction, "Destination", "DirectionText")
     prediction_headsign = _get_any(prediction, "Destination", "DirectionText")
@@ -509,7 +517,7 @@ def _build_available_buses(
     destination_stop_id: Optional[str],
     google_candidates: List[dict],
 ) -> List[dict]:
-    walk_to_stop = _google_route(user_position, {"lat": stop["lat"], "lng": stop["lng"]})
+    walk_to_stop = _safe_walk_route(user_position, {"lat": stop["lat"], "lng": stop["lng"]})
     matched_boarding_stop = _nearest_gtfs_stop(
         {"lat": stop["lat"], "lng": stop["lng"]},
         preferred_name=stop["name"],
@@ -522,16 +530,20 @@ def _build_available_buses(
     )
     buses: List[dict] = []
     for index, prediction in enumerate(sorted_predictions):
-        bus = _build_one_available_bus(
-            prediction,
-            index=index,
-            stop=stop,
-            boarding_stop_id=boarding_stop_id,
-            destination_marker=destination_marker,
-            destination_stop_id=destination_stop_id,
-            google_candidates=google_candidates,
-            walk_to_stop=walk_to_stop,
-        )
+        try:
+            bus = _build_one_available_bus(
+                prediction,
+                index=index,
+                stop=stop,
+                boarding_stop_id=boarding_stop_id,
+                destination_marker=destination_marker,
+                destination_stop_id=destination_stop_id,
+                google_candidates=google_candidates,
+                walk_to_stop=walk_to_stop,
+            )
+        except (HTTPException, KeyError, ValueError, TypeError, requests.RequestException) as exc:
+            print(f"[plan_trip] prediction route build failed: {exc!r}")
+            continue
         if bus is not None:
             buses.append(bus)
     return buses
@@ -716,7 +728,7 @@ def build_plan_trip_response(
     origin_stop = candidate_stops[0] if candidate_stops else None
     start_stop_id = origin_stop["stop_id"] if origin_stop else None
     destination_stop_id = _nearest_gtfs_stop_id(destination_marker)
-    direct_walk = None if bus_only else _google_route(start_marker, destination_marker)
+    direct_walk = None if bus_only else _safe_walk_route(start_marker, destination_marker)
 
     selected_stops = _route_planning_stops(candidate_stops, google_candidates)
     prediction_sources, available_buses = _fetch_buses_for_stops(
