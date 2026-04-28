@@ -573,6 +573,13 @@ def _ordered_segment_candidates(
     google_route_id: Optional[str],
 ) -> List[dict]:
     candidate_trips = [trip for trip in trips if _get_stripped(trip, "route_id") in route_ids]
+    if direction_hint is not None:
+        candidate_trips = [
+            trip for trip in candidate_trips
+            if _try_int(trip.get("direction_id")) == direction_hint
+        ]
+        if selected_trip and _try_int(selected_trip.get("direction_id")) != direction_hint:
+            selected_trip = None
     prioritized: List[tuple[int, dict]] = []
     if selected_trip:
         selected_trip_route_id = _get_stripped(selected_trip, "route_id")
@@ -608,12 +615,19 @@ def _build_transit_segment(
     destination_stop_id: Optional[str],
     destination_point: dict,
     google_candidate: Optional[dict] = None,
+    active_service_ids: Optional[set[str]] = None,
 ) -> Optional[dict]:
     _ensure_gtfs_files_exist()
     trips = _load_gtfs_trips()
     stop_times_by_trip = _load_gtfs_stop_times_by_trip()
     shapes_by_id = _load_gtfs_shapes()
     stops_by_id = _load_gtfs_stops_by_id()
+
+    if active_service_ids is not None:
+        trips = [
+            trip for trip in trips
+            if _get_stripped(trip, "service_id") in active_service_ids
+        ]
 
     selected_trip = next(
         (trip for trip in trips if _get_stripped(trip, "trip_id") == str(trip_id)),
@@ -659,7 +673,11 @@ def _build_transit_segment(
         )
         if not segment:
             continue
-        if preferred_headsign and not _headsign_is_compatible(segment.get("trip_headsign"), preferred_headsign):
+        if (
+            direction_hint is not None
+            and preferred_headsign
+            and not _headsign_is_compatible(segment.get("trip_headsign"), preferred_headsign)
+        ):
             continue
         if not _segment_moves_toward_destination(segment, destination_point):
             continue
@@ -686,7 +704,11 @@ def _build_transit_segment(
         )
         if not segment:
             continue
-        if preferred_headsign and not _headsign_is_compatible(segment.get("trip_headsign"), preferred_headsign):
+        if (
+            direction_hint is not None
+            and preferred_headsign
+            and not _headsign_is_compatible(segment.get("trip_headsign"), preferred_headsign)
+        ):
             continue
         if _segment_moves_toward_destination(segment, destination_point):
             return segment

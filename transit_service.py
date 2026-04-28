@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import requests
 from fastapi import HTTPException
@@ -39,9 +40,23 @@ from gtfs_service import (
     _nearest_gtfs_stop,
     _nearest_gtfs_stop_id,
     _resolve_route_ids,
+    _segment_moves_toward_destination,
 )
 from http_client import _request_json
 from telemetry_service import _capacity_for_prediction, occupancy_seats_left
+
+@dataclass(frozen=True)
+class RouteIntent:
+    source: str
+    route_ids: Tuple[str, ...]
+    route_short_name: Optional[str]
+    boarding_stop_id: Optional[str]
+    alighting_stop_id: Optional[str]
+    trip_headsign: Optional[str]
+    departure_time: Optional[str]
+    direction_id: Optional[int]
+    google_candidate: Optional[dict] = None
+
 
 def _fetch_service_alert(routes: Optional[List[str]] = None) -> Optional[dict]:
     if not ACTRANSIT_API_KEY:
@@ -114,7 +129,7 @@ def _fetch_route_vehicles(route_name: str, direction_id: Optional[int] = None) -
     try:
         trip_directions = _gtfs_trip_directions()
     except HTTPException:
-        return vehicles
+        return []
 
     filtered: List[dict] = []
     for vehicle in vehicles:
@@ -124,10 +139,7 @@ def _fetch_route_vehicles(route_name: str, direction_id: Optional[int] = None) -
         trip_direction = trip_directions.get(str(trip_id))
         if trip_direction is not None and trip_direction == direction_id:
             filtered.append(vehicle)
-    # AC Transit realtime trip ids can differ from the static GTFS trip ids in
-    # trips.txt. If none match, keep the live route vehicles visible rather than
-    # hiding every bus marker.
-    return filtered or vehicles
+    return filtered
 
 
 def _fetch_trip_pattern(route_name: str, trip_id: Optional[int]) -> Optional[dict]:
@@ -169,38 +181,231 @@ def _fetch_trip_pattern(route_name: str, trip_id: Optional[int]) -> Optional[dic
         return None
     return {"type": "LineString", "coordinates": coordinates}
 
-def _google_candidate_score_for_prediction(prediction: dict, google_candidates: List[dict]) -> int:
-    if not google_candidates:
-        return 0
-    route_name = str(prediction.get("RouteName") or "").strip()
-    route_ids = set(_resolve_route_ids(route_name))
-    prediction_headsign = prediction.get("Destination") or prediction.get("DirectionText")
+def _unique_strings(values: List[Optional[str]]) -> Tuple[str, ...]:
+    unique: List[str] = []
+    seen: set[str] = set()
+    for value in values:
+        stripped = str(value or "").strip()
+        if not stripped or stripped in seen:
+            continue
+        seen.add(stripped)
+        unique.append(stripped)
+    return tuple(unique)
 
-    def candidate_score(candidate: dict) -> int:
-        score = 0
-        candidate_route = _get_stripped(candidate, "route_short_name")
-        candidate_route_id = _get_stripped(candidate, "route_id")
-        if candidate_route and candidate_route == route_name:
-            score += 20
-        if candidate_route_id and candidate_route_id in route_ids:
-            score += 20
-        if prediction_headsign and _headsign_is_compatible(prediction_headsign, candidate.get("trip_headsign")):
-            score += 10
-        return score
 
-    return max((candidate_score(candidate) for candidate in google_candidates), default=0)
+def _safe_resolve_route_ids(route_identifier: Optional[str]) -> Tuple[str, ...]:
+    route_key = str(route_identifier or "").strip()
+    if not route_key:
+        return tuple()
+    try:
+        return tuple(_resolve_route_ids(route_key))
+    except HTTPException:
+        return tuple()
+
+
+def _prediction_headsign(prediction: dict) -> Optional[str]:
+    return _get_any(prediction, "Destination", "DirectionText")
+
+
+def _prediction_route_ids(prediction: dict) -> Tuple[str, ...]:
+    return _safe_resolve_route_ids(_get_stripped(prediction, "RouteName"))
+
+
+def _google_candidate_route_ids(candidate: dict) -> Tuple[str, ...]:
+    route_id = _get_stripped(candidate, "route_id")
+    route_short_name = _get_stripped(candidate, "route_short_name")
+    return _unique_strings([
+        route_id,
+        *_safe_resolve_route_ids(route_id),
+        *_safe_resolve_route_ids(route_short_name),
+    ])
+
+
+def _same_route_label(left: Optional[str], right: Optional[str]) -> bool:
+    left_key = str(left or "").strip().upper()
+    right_key = str(right or "").strip().upper()
+    return bool(left_key and right_key and left_key == right_key)
+
+
+def _parse_optional_departure(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return _parse_departure(value)
+    except ValueError:
+        return None
+
+
+def _departure_delta_minutes(left: Optional[str], right: Optional[str]) -> Optional[float]:
+    left_time = _parse_optional_departure(left)
+    right_time = _parse_optional_departure(right)
+    if left_time is None or right_time is None:
+        return None
+    return abs((left_time - right_time).total_seconds()) / 60
+
+
+def _prediction_source(prediction: dict) -> str:
+    return "gtfs_schedule" if _get_stripped(prediction, "Source") == "schedule" else "live_prediction"
+
+
+def _candidate_matches_boarding_stop(
+    candidate: dict,
+    stop: Optional[dict],
+    boarding_stop_id: Optional[str],
+) -> bool:
+    candidate_stop_id = str(candidate.get("boarding_stop_id") or "").strip()
+    known_stop_ids = {
+        str(value or "").strip()
+        for value in [
+            boarding_stop_id,
+            (stop or {}).get("stop_id"),
+        ]
+        if str(value or "").strip()
+    }
+    if candidate_stop_id and candidate_stop_id in known_stop_ids:
+        return True
+
+    boarding_point = candidate.get("boarding_stop_point")
+    if not stop or not boarding_point:
+        return False
+    try:
+        return _distance_meters(stop, boarding_point) <= 160
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _route_intent_from_google_candidate(
+    candidate: dict,
+    prediction: dict,
+    boarding_stop_id: Optional[str],
+) -> RouteIntent:
+    route_short_name = _get_stripped(candidate, "route_short_name") or _get_stripped(prediction, "RouteName")
+    return RouteIntent(
+        source="google_transit",
+        route_ids=_google_candidate_route_ids(candidate),
+        route_short_name=route_short_name,
+        boarding_stop_id=str(candidate.get("boarding_stop_id") or boarding_stop_id or "").strip() or None,
+        alighting_stop_id=str(candidate.get("alighting_stop_id") or "").strip() or None,
+        trip_headsign=_get_stripped(candidate, "trip_headsign") or _prediction_headsign(prediction),
+        departure_time=candidate.get("departure_time") or prediction.get("PredictedDeparture"),
+        direction_id=_try_int(prediction.get("DirectionId")),
+        google_candidate=candidate,
+    )
+
+
+def _route_intent_from_prediction(
+    prediction: dict,
+    boarding_stop_id: Optional[str],
+    destination_stop_id: Optional[str],
+) -> Optional[RouteIntent]:
+    route_name = _get_stripped(prediction, "RouteName")
+    route_ids = _prediction_route_ids(prediction)
+    if not route_name and not route_ids:
+        return None
+    return RouteIntent(
+        source=_prediction_source(prediction),
+        route_ids=route_ids,
+        route_short_name=route_name,
+        boarding_stop_id=str(boarding_stop_id or "").strip() or None,
+        alighting_stop_id=str(destination_stop_id or "").strip() or None,
+        trip_headsign=_prediction_headsign(prediction),
+        departure_time=prediction.get("PredictedDeparture"),
+        direction_id=_try_int(prediction.get("DirectionId")),
+    )
+
+
+def _prediction_matches_route_intent(prediction: dict, intent: RouteIntent) -> bool:
+    route_name = _get_stripped(prediction, "RouteName")
+    prediction_route_ids = set(_prediction_route_ids(prediction))
+    intent_route_ids = set(intent.route_ids)
+    if intent_route_ids:
+        route_id_match = bool(prediction_route_ids and prediction_route_ids.intersection(intent_route_ids))
+        route_label_match = _same_route_label(route_name, intent.route_short_name)
+        if not route_id_match and not route_label_match:
+            return False
+    elif intent.route_short_name and not _same_route_label(route_name, intent.route_short_name):
+        return False
+
+    prediction_direction_id = _try_int(prediction.get("DirectionId"))
+    if intent.direction_id is not None and prediction_direction_id != intent.direction_id:
+        return False
+
+    prediction_headsign = _prediction_headsign(prediction)
+    if (
+        intent.direction_id is not None
+        and intent.trip_headsign
+        and prediction_headsign
+        and not _headsign_is_compatible(prediction_headsign, intent.trip_headsign)
+    ):
+        return False
+    return True
+
+
+def _route_intent_score_for_prediction(prediction: dict, intent: RouteIntent) -> float:
+    score = 0.0
+    route_name = _get_stripped(prediction, "RouteName")
+    prediction_route_ids = set(_prediction_route_ids(prediction))
+    intent_route_ids = set(intent.route_ids)
+    if intent_route_ids and prediction_route_ids.intersection(intent_route_ids):
+        score += 100
+    if _same_route_label(route_name, intent.route_short_name):
+        score += 80
+    prediction_direction_id = _try_int(prediction.get("DirectionId"))
+    if intent.direction_id is not None and prediction_direction_id == intent.direction_id:
+        score += 50
+    if intent.trip_headsign and _headsign_is_compatible(_prediction_headsign(prediction), intent.trip_headsign):
+        score += 20
+    delta_minutes = _departure_delta_minutes(prediction.get("PredictedDeparture"), intent.departure_time)
+    if delta_minutes is not None:
+        score += max(0, 20 - min(delta_minutes, 20))
+    if intent.source == "google_transit":
+        score += 15
+    return score
+
+
+def _select_route_intent(
+    prediction: dict,
+    *,
+    stop: Optional[dict],
+    boarding_stop_id: Optional[str],
+    destination_stop_id: Optional[str],
+    google_candidates: List[dict],
+) -> Optional[RouteIntent]:
+    google_intents: List[RouteIntent] = []
+    for candidate in google_candidates:
+        if not _candidate_matches_boarding_stop(candidate, stop, boarding_stop_id):
+            continue
+        intent = _route_intent_from_google_candidate(candidate, prediction, boarding_stop_id)
+        if _prediction_matches_route_intent(prediction, intent):
+            google_intents.append(intent)
+
+    if google_intents:
+        return max(
+            google_intents,
+            key=lambda intent: _route_intent_score_for_prediction(prediction, intent),
+        )
+    return _route_intent_from_prediction(prediction, boarding_stop_id, destination_stop_id)
 
 
 def _select_route_planning_predictions(
     predictions: List[dict],
+    stop: Optional[dict] = None,
+    destination_stop_id: Optional[str] = None,
     google_candidates: Optional[List[dict]] = None,
     limit: int = ROUTE_PLAN_MAX_PREDICTIONS_PER_STOP,
 ) -> List[dict]:
     selected: List[dict] = []
     seen: set[tuple] = set()
 
-    def sort_key(prediction: dict) -> tuple[int, datetime]:
-        score = _google_candidate_score_for_prediction(prediction, google_candidates or [])
+    def sort_key(prediction: dict) -> tuple[float, datetime]:
+        intent = _select_route_intent(
+            prediction,
+            stop=stop,
+            boarding_stop_id=(stop or {}).get("stop_id"),
+            destination_stop_id=destination_stop_id,
+            google_candidates=google_candidates or [],
+        )
+        score = _route_intent_score_for_prediction(prediction, intent) if intent else 0
         try:
             departure = _parse_departure(prediction["PredictedDeparture"])
         except (KeyError, ValueError):
@@ -213,6 +418,15 @@ def _select_route_planning_predictions(
         except (KeyError, ValueError):
             continue
         if eta > ETA_THRESHOLD_MINUTES:
+            continue
+        intent = _select_route_intent(
+            prediction,
+            stop=stop,
+            boarding_stop_id=(stop or {}).get("stop_id"),
+            destination_stop_id=destination_stop_id,
+            google_candidates=google_candidates or [],
+        )
+        if intent is None or not _prediction_matches_route_intent(prediction, intent):
             continue
         key = (
             str(prediction.get("RouteName") or "").strip(),
@@ -357,43 +571,50 @@ def _scheduled_predictions_for_stop(stop: dict, now: Optional[datetime] = None) 
     return predictions[:12]
 
 
-def _select_google_transit_candidate(
-    route_name: str,
-    stop: dict,
-    prediction: dict,
-    google_candidates: List[dict],
-) -> Optional[dict]:
-    if not google_candidates:
-        return None
+def _active_service_ids_for_prediction(prediction: dict) -> set[str]:
+    departure = _parse_optional_departure(prediction.get("PredictedDeparture"))
+    return _active_gtfs_service_ids(departure)
 
-    route_ids = set(_resolve_route_ids(route_name))
-    prediction_departure = prediction.get("PredictedDeparture")
-    prediction_time = _parse_departure(prediction_departure) if prediction_departure else None
 
-    def candidate_score(candidate: dict) -> float:
-        score = 0.0
-        if candidate.get("route_id") and candidate["route_id"] in route_ids:
-            score += 8
-        if _get_stripped(candidate, "route_short_name") == route_name:
-            score += 8
+def _segment_matches_route_intent(segment: dict, intent: RouteIntent, destination_point: dict) -> bool:
+    segment_route_id = _get_stripped(segment, "route_id")
+    segment_route_short_name = _get_stripped(segment, "route_short_name")
+    if intent.route_ids and segment_route_id not in set(intent.route_ids):
+        return False
+    if (
+        not intent.route_ids
+        and intent.route_short_name
+        and not _same_route_label(segment_route_short_name, intent.route_short_name)
+    ):
+        return False
 
-        boarding_stop_id = candidate.get("boarding_stop_id")
-        if boarding_stop_id and boarding_stop_id == stop["stop_id"]:
-            score += 10
-        elif candidate.get("boarding_stop_point"):
-            score += max(0, 6 - (_distance_meters(stop, candidate["boarding_stop_point"]) / 40))
+    segment_direction_id = _try_int(segment.get("direction_id"))
+    if intent.direction_id is not None and segment_direction_id != intent.direction_id:
+        return False
 
-        candidate_departure = candidate.get("departure_time")
-        if prediction_time and candidate_departure:
-            try:
-                delta_minutes = abs((_parse_departure(candidate_departure) - prediction_time).total_seconds()) / 60
-                score += max(0, 8 - min(delta_minutes, 8))
-            except ValueError:
-                return score
-        return score
+    boarding_stop_id = str((segment.get("boarding_stop") or {}).get("stop_id") or "").strip()
+    if intent.boarding_stop_id and boarding_stop_id != intent.boarding_stop_id:
+        return False
 
-    best_candidate = max(google_candidates, key=candidate_score)
-    return best_candidate if candidate_score(best_candidate) >= 8 else None
+    alighting_stop_id = str((segment.get("alighting_stop") or {}).get("stop_id") or "").strip()
+    if intent.google_candidate and intent.alighting_stop_id and alighting_stop_id != intent.alighting_stop_id:
+        return False
+
+    if (
+        intent.direction_id is not None
+        and intent.trip_headsign
+        and not _headsign_is_compatible(segment.get("trip_headsign"), intent.trip_headsign)
+    ):
+        return False
+    return _segment_moves_toward_destination(segment, destination_point)
+
+
+def _direction_match_source(intent: RouteIntent) -> str:
+    if intent.direction_id is not None:
+        return "gtfs_direction"
+    if intent.google_candidate:
+        return "google_stops"
+    return "segment_geometry"
 
 
 def _build_one_available_bus(
@@ -407,14 +628,23 @@ def _build_one_available_bus(
     google_candidates: List[dict],
     walk_to_stop: dict,
 ) -> Optional[dict]:
-    route_name = prediction.get("RouteName", f"Route {index + 1}")
+    route_name = _get_stripped(prediction, "RouteName") or f"Route {index + 1}"
     delay_seconds = int(prediction.get("PredictedDelayInSeconds", 0) or 0)
     delay_minutes = round(delay_seconds / 60)
     eta = _minutes_until_departure(prediction["PredictedDeparture"])
     if eta > ETA_THRESHOLD_MINUTES:
         return None
     prediction_direction_id = _try_int(prediction.get("DirectionId"))
-    google_candidate = _select_google_transit_candidate(route_name, stop, prediction, google_candidates)
+    route_intent = _select_route_intent(
+        prediction,
+        stop=stop,
+        boarding_stop_id=boarding_stop_id,
+        destination_stop_id=destination_stop_id,
+        google_candidates=google_candidates,
+    )
+    if route_intent is None or not _prediction_matches_route_intent(prediction, route_intent):
+        return None
+    google_candidate = route_intent.google_candidate
     try:
         transit_segment = _build_transit_segment(
             route_name=route_name,
@@ -424,10 +654,13 @@ def _build_one_available_bus(
             destination_stop_id=destination_stop_id,
             destination_point=destination_marker,
             google_candidate=google_candidate,
+            active_service_ids=_active_service_ids_for_prediction(prediction),
         )
     except HTTPException:
         return None
     if not transit_segment:
+        return None
+    if not _segment_matches_route_intent(transit_segment, route_intent, destination_marker):
         return None
 
     alighting_stop = transit_segment.get("alighting_stop") or {}
@@ -440,7 +673,11 @@ def _build_one_available_bus(
 
     trip_headsign = transit_segment.get("trip_headsign") or _get_any(prediction, "Destination", "DirectionText")
     prediction_headsign = _get_any(prediction, "Destination", "DirectionText")
-    if prediction_headsign and not _headsign_is_compatible(trip_headsign, prediction_headsign):
+    if (
+        route_intent.direction_id is not None
+        and prediction_headsign
+        and not _headsign_is_compatible(trip_headsign, prediction_headsign)
+    ):
         return None
 
     capacity, occupancy = _capacity_for_prediction(prediction, route_name)
@@ -485,6 +722,7 @@ def _build_one_available_bus(
             else f"Route {route_name} has reported crowding. Consider another prediction or walking."
         ),
         "vehicle_id": prediction.get("VehicleId"),
+        "prediction_trip_id": prediction.get("TripId"),
         "trip_id": trip_id_from_segment if trip_id_from_segment is not None else prediction.get("TripId"),
         "direction_id": transit_segment.get("direction_id") if transit_segment else prediction_direction_id,
         "route_id": transit_segment.get("route_id"),
@@ -506,6 +744,8 @@ def _build_one_available_bus(
         "walk_to_stop": walk_to_stop,
         "walk_from_stop": walk_from_stop,
         "ride_instruction": (google_candidate or {}).get("ride_instruction"),
+        "match_source": route_intent.source,
+        "direction_match_source": _direction_match_source(route_intent),
     }
 
 
@@ -642,7 +882,12 @@ def _fetch_buses_for_stops(
             predictions = _scheduled_predictions_for_stop(stop)
             if predictions:
                 prediction_source = "schedule"
-        predictions = _select_route_planning_predictions(predictions, google_candidates)
+        predictions = _select_route_planning_predictions(
+            predictions,
+            stop=stop,
+            destination_stop_id=destination_stop_id,
+            google_candidates=google_candidates,
+        )
         buses = _build_available_buses(
             predictions,
             start_marker,
@@ -668,15 +913,33 @@ def _fetch_buses_for_stops(
 
 
 def _dedupe_and_rank_buses(buses: List[dict], direct_walk: Optional[dict]) -> List[dict]:
+    def rank_number(value: object) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(10**9)
+
+    def rank_key(bus: dict) -> tuple[int, float, float]:
+        has_confirmed_intent = (
+            bus.get("match_source") in {"google_transit", "live_prediction", "gtfs_schedule"}
+            and bus.get("direction_match_source") in {"google_stops", "gtfs_direction", "segment_geometry"}
+        )
+        return (
+            0 if has_confirmed_intent else 1,
+            rank_number(bus.get("total_trip_time_minutes")),
+            rank_number(bus.get("eta")),
+        )
+
     deduped: Dict[tuple, dict] = {}
     for bus in buses:
         key = (
             bus.get("route_id") or bus.get("route_short_name") or bus.get("route_number"),
+            bus.get("direction_id"),
             (bus.get("boarding_stop") or {}).get("stop_id"),
             (bus.get("alighting_stop") or {}).get("stop_id"),
         )
         existing = deduped.get(key)
-        if existing is None or bus.get("eta", 10**9) < existing.get("eta", 10**9):
+        if existing is None or rank_key(bus) < rank_key(existing):
             deduped[key] = bus
 
     direct_walk_minutes = direct_walk.get("duration_minutes") if direct_walk else None
@@ -691,7 +954,7 @@ def _dedupe_and_rank_buses(buses: List[dict], direct_walk: Optional[dict]) -> Li
 
     return sorted(
         (bus for bus in deduped.values() if beats_walking(bus)),
-        key=lambda bus: (bus.get("total_trip_time_minutes", 10**9), bus.get("eta", 10**9)),
+        key=rank_key,
     )[:ROUTE_PLAN_MAX_TOTAL_OPTIONS]
 
 

@@ -9,11 +9,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from auth_service import _check_rate_limit, _create_session, _hash_password, _record_login_attempt, _require_user, _user_from_token, _verify_password
 from calendar_service import _calendar_commute_previews, _extract_course_code, _filter_and_annotate_calendar_events, _is_future_event, _parse_ics_events, _store_calendar_events
-from common import _validate_lat_lng
+from common import _get_stripped, _parse_departure, _try_int, _validate_lat_lng
 from config import ALLOWED_CORS_ORIGINS, GOOGLE_MAPS_API, GOOGLE_PLACES_SEARCH_RADIUS_METERS
 from database import _db, _init_db
 from google_service import _places_location_bias
-from gtfs_service import _gtfs_route_shape_coordinates, _load_gtfs_calendar, _load_gtfs_calendar_dates, _load_gtfs_routes, _load_gtfs_routes_by_id, _load_gtfs_shapes, _load_gtfs_stop_times_by_stop, _load_gtfs_stop_times_by_trip, _load_gtfs_stops_by_id, _load_gtfs_trips, _load_gtfs_trips_by_id
+from gtfs_service import _gtfs_route_shape_coordinates, _load_gtfs_calendar, _load_gtfs_calendar_dates, _load_gtfs_routes, _load_gtfs_routes_by_id, _load_gtfs_shapes, _load_gtfs_stop_times_by_stop, _load_gtfs_stop_times_by_trip, _load_gtfs_stops_by_id, _load_gtfs_trips, _load_gtfs_trips_by_id, _resolve_route_ids
 from http_client import _google_routes_headers, _post_json, _request_json
 from local_eats_service import clear_favorite, get_local_eats, set_favorite
 from schemas import AuthRequest, AuthResponse, BulkCalendarEventUpdate, CalendarEvent, CalendarImportResponse, CommuteOrigin, DeleteEventsRequest, LocalEatsResponse, ManualEventsRequest, RefreshTokenRequest, Telemetry, TripLogRequest, UserPreferences, UserPreferencesPatch
@@ -331,34 +331,148 @@ def get_gtfs_shape(route_id: str, direction_id: Optional[int] = None):
     return coordinates
 
 
+def _route_vehicle_matches_prediction_route(prediction: dict, route_id: str, route_ids: set[str]) -> bool:
+    prediction_route = _get_stripped(prediction, "RouteName")
+    if not prediction_route:
+        return False
+    if prediction_route == route_id or prediction_route in route_ids:
+        return True
+    try:
+        prediction_route_ids = set(_resolve_route_ids(prediction_route))
+    except HTTPException:
+        prediction_route_ids = set()
+    return route_id in prediction_route_ids or bool(route_ids.intersection(prediction_route_ids))
+
+
+def _route_vehicle_matches_prediction_direction(prediction: dict, direction_id: Optional[int]) -> bool:
+    if direction_id is None:
+        return True
+    prediction_direction = _try_int(prediction.get("DirectionId"))
+    return prediction_direction is not None and prediction_direction == direction_id
+
+
+def _prediction_departure_matches(prediction: dict, selected_departure_time: Optional[str]) -> bool:
+    if not selected_departure_time:
+        return True
+    prediction_departure = prediction.get("PredictedDeparture")
+    if not prediction_departure:
+        return False
+    try:
+        delta_seconds = abs((_parse_departure(prediction_departure) - _parse_departure(selected_departure_time)).total_seconds())
+    except (TypeError, ValueError):
+        return False
+    return delta_seconds <= 120
+
+
+def _selected_prediction_vehicle_id(
+    predictions: list[dict],
+    selected_prediction_trip_id: Optional[str],
+    selected_departure_time: Optional[str],
+) -> Optional[str]:
+    selected_trip_id = (selected_prediction_trip_id or "").strip()
+    if not selected_trip_id and not selected_departure_time:
+        return None
+
+    for prediction in predictions:
+        vehicle_id = prediction.get("VehicleId")
+        if vehicle_id is None:
+            continue
+        trip_matches = not selected_trip_id or str(prediction.get("TripId") or "").strip() == selected_trip_id
+        if trip_matches and _prediction_departure_matches(prediction, selected_departure_time):
+            return str(vehicle_id)
+    return None
+
+
 @app.get("/route/vehicles")
-def get_route_vehicles(route_id: str, direction_id: Optional[int] = None, boarding_stop_id: Optional[str] = None):
+def get_route_vehicles(
+    route_id: str,
+    direction_id: Optional[int] = None,
+    boarding_stop_id: Optional[str] = None,
+    selected_vehicle_id: Optional[str] = None,
+    selected_prediction_trip_id: Optional[str] = None,
+    selected_departure_time: Optional[str] = None,
+):
     from gtfs_service import _load_gtfs_trips_by_id
     from telemetry_service import _vehicle_occupancy_for_marker
-    vehicles = _fetch_route_vehicles(route_id, direction_id=direction_id)
+    vehicles = _fetch_route_vehicles(route_id)
     trips_by_id = _load_gtfs_trips_by_id()
     prediction_by_vehicle = {}
+    route_ids = set(_resolve_route_ids(route_id))
+    boarding_predictions = []
     if boarding_stop_id:
         predictions, _ = _fetch_predictions(boarding_stop_id)
         for prediction in predictions:
+            if not _route_vehicle_matches_prediction_route(prediction, route_id, route_ids):
+                continue
+            if not _route_vehicle_matches_prediction_direction(prediction, direction_id):
+                continue
+            boarding_predictions.append(prediction)
             vehicle_id = prediction.get("VehicleId")
             if vehicle_id is not None:
                 prediction_by_vehicle[str(vehicle_id)] = prediction
-    return [
-        {
+    selected_vehicle_key = (selected_vehicle_id or "").strip() or None
+    selected_prediction_vehicle_key = None if selected_vehicle_key else _selected_prediction_vehicle_id(
+        boarding_predictions,
+        selected_prediction_trip_id,
+        selected_departure_time,
+    )
+
+    response_vehicles = []
+    for vehicle in vehicles:
+        if vehicle.get("Latitude") is None or vehicle.get("Longitude") is None:
+            continue
+        vehicle_key = str(vehicle.get("VehicleId")) if vehicle.get("VehicleId") is not None else None
+        current_trip_id = str(vehicle.get("CurrentTripId")) if vehicle.get("CurrentTripId") is not None else None
+        current_trip = trips_by_id.get(current_trip_id or "")
+        current_trip_direction = _try_int((current_trip or {}).get("direction_id"))
+        prediction = prediction_by_vehicle.get(vehicle_key or "")
+        exact_selected = bool(selected_vehicle_key and vehicle_key == selected_vehicle_key)
+        prediction_selected = bool(
+            not exact_selected
+            and selected_prediction_vehicle_key
+            and vehicle_key == selected_prediction_vehicle_key
+        )
+        gtfs_direction_verified = bool(
+            direction_id is not None
+            and current_trip_direction is not None
+            and current_trip_direction == direction_id
+        )
+        if direction_id is not None and not (exact_selected or prediction_selected or gtfs_direction_verified):
+            continue
+        if exact_selected:
+            direction_match_source = "selected_vehicle"
+        elif prediction_selected:
+            direction_match_source = "boarding_prediction"
+        elif gtfs_direction_verified:
+            direction_match_source = "gtfs_trip"
+        else:
+            direction_match_source = None
+        is_selected_vehicle = exact_selected or prediction_selected
+        arrival_minutes = _minutes_until_departure(prediction["PredictedDeparture"]) if prediction else None
+        response_vehicles.append({
             "vehicle_id": vehicle.get("VehicleId"),
             "trip_id": vehicle.get("CurrentTripId"),
             "lat": vehicle.get("Latitude"),
             "lng": vehicle.get("Longitude"),
             "heading": vehicle.get("Heading"),
             "reported_at": vehicle.get("TimeLastReported"),
-            "arrival_minutes": _minutes_until_departure(prediction_by_vehicle[str(vehicle.get("VehicleId"))]["PredictedDeparture"]) if vehicle.get("VehicleId") is not None and str(vehicle.get("VehicleId")) in prediction_by_vehicle else None,
-            "headsign": (prediction_by_vehicle[str(vehicle.get("VehicleId"))].get("Destination") or prediction_by_vehicle[str(vehicle.get("VehicleId"))].get("DirectionText")) if vehicle.get("VehicleId") is not None and str(vehicle.get("VehicleId")) in prediction_by_vehicle else (trips_by_id.get(str(vehicle.get("CurrentTripId"))) or {}).get("trip_headsign"),
+            "arrival_minutes": arrival_minutes,
+            "arrival_source": "boarding_prediction" if prediction else None,
+            "headsign": (prediction.get("Destination") or prediction.get("DirectionText")) if prediction else (current_trip or {}).get("trip_headsign"),
             "occupancy_percent": _vehicle_occupancy_for_marker(str(vehicle.get("VehicleId")) if vehicle.get("VehicleId") is not None else None, route_id),
-        }
-        for vehicle in vehicles
-        if vehicle.get("Latitude") is not None and vehicle.get("Longitude") is not None
-    ]
+            "is_selected_vehicle": is_selected_vehicle,
+            "match_confidence": "exact_vehicle" if exact_selected else "boarding_prediction" if prediction_selected else "route_direction_only",
+            "is_direction_verified": bool(direction_match_source),
+            "direction_match_source": direction_match_source,
+        })
+
+    return sorted(
+        response_vehicles,
+        key=lambda vehicle: (
+            not vehicle["is_selected_vehicle"],
+            vehicle["arrival_minutes"] if isinstance(vehicle.get("arrival_minutes"), int) else 10**9,
+        ),
+    )
 
 
 @app.get("/plan-trip")
